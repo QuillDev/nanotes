@@ -1,4 +1,8 @@
-# NaNotes
+<p align="center">
+  <img src="assets/logo.svg" alt="NaNotes" width="320" />
+</p>
+
+<h1 align="center">NaNotes</h1>
 
 NaNotes is a Nako-styled floating Markdown scratchpad backed by a local notes folder. It's built for people who want a quick, always-a-hotkey-away notepad whose notes stay as plain `.md` files — one file per note, no proprietary database.
 
