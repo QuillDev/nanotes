@@ -1,0 +1,29 @@
+[package]
+name = "nanotes"
+version = "0.1.0"
+description = "A Nako-styled floating Markdown scratchpad backed by local files."
+authors = ["QuillDev <siinspam@gmail.com>"]
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "nanotes_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+nucleo-matcher = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["protocol-asset", "macos-private-api"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-opener = "2"
+trash = "5"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-autostart = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+window-vibrancy = "0.6"

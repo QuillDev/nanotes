@@ -1,0 +1,937 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --bg: #09090c;
+  --surface: #101116;
+  --surface-2: #171923;
+  --glass-bg: rgba(9, 9, 12, 0.32);
+  --glass-surface: rgba(16, 17, 22, 0.72);
+  --glass-surface-2: rgba(23, 25, 35, 0.78);
+  --border: #252834;
+  --text: #ececf1;
+  --muted: #8d93a4;
+  --pink: #f65c8e;
+  --pink-bright: #ff7aa5;
+  --pink-deep: #d8456f;
+  --ok: #4ade80;
+  --bad: #f87171;
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-color: var(--surface-2) var(--bg);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: var(--bg); }
+*::-webkit-scrollbar-thumb {
+  background: var(--surface-2);
+  border: 2px solid var(--bg);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--border); }
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  /* The frosted-glass blur is supplied natively (window-vibrancy, HudWindow
+     material pinned to the Active state) so it stays constant on focus change.
+     This tint only darkens it; no CSS backdrop-filter, which followed key-window
+     state and made the transparency shift when the app was focused. */
+  background: var(--glass-bg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 10px 12px 8px;
+  background: transparent;
+  cursor: default;
+  user-select: none;
+}
+
+.title {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.mark {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--pink);
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 680;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: default;
+}
+
+.saveState {
+  max-width: 170px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saveState-saving,
+.saveState-loading { color: var(--pink-bright); }
+.saveState-saved { color: var(--ok); }
+.saveState-error { color: var(--bad); }
+
+button {
+  height: 27px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 7px;
+  background: var(--glass-surface-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  padding: 0 10px;
+}
+
+button:hover {
+  border-color: var(--pink-deep);
+  color: #fff;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Takes over the editor area (everything below the draggable topbar) without
+   covering the title bar / traffic lights. The editor is hidden behind it
+   (.editorShell-hidden) so this can stay translucent and show the same native
+   frosted-glass tint as the rest of the app rather than a flat opaque slab. */
+.settingsOverlay {
+  position: absolute;
+  /* Aligned to the bottom of .topbar (border-box min-height: 34px) so the
+     draggable title bar / traffic lights stay uncovered. */
+  top: 34px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  /* Transparent: the shell already tints the native frosted glass, so adding
+     another layer here would darken settings relative to the editor. The hidden
+     editor behind it means no note content shows through. */
+  background: transparent;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  animation: settingsOverlayIn 0.18s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* Kept mounted (CodeMirror state preserved) but invisible while settings is the
+   active surface. */
+.editorShell-hidden {
+  visibility: hidden;
+}
+
+@keyframes settingsOverlayIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.settingsHeader {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+  padding: 13px 12px 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  user-select: none;
+}
+
+.settingsTitle {
+  flex: 1 1 auto;
+  margin: 0;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 720;
+  letter-spacing: 0.01em;
+}
+
+/* Plain glyph button — no chrome, just the icon that brightens on hover. */
+.settingsClose {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.settingsClose:hover {
+  color: var(--pink-bright);
+}
+
+.settingsBody {
+  display: grid;
+  gap: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 16px 20px;
+  align-content: start;
+}
+
+
+label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+label span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+input {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  background: rgba(9, 9, 12, 0.58);
+  color: var(--text);
+  padding: 0 9px;
+}
+
+input:focus {
+  border-color: var(--pink-deep);
+  box-shadow: none;
+}
+
+.pathInput {
+  position: relative;
+  min-width: 0;
+}
+
+.pathInput input {
+  width: 100%;
+}
+
+.pathSuggestions {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 3px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(14, 14, 18, 0.96);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+
+.pathSuggestion {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pathSuggestion-active {
+  background: rgba(246, 92, 142, 0.28);
+  color: #fff;
+}
+
+.pathSuggestionLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pathSuggestionIcon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--pink);
+}
+
+/* In-editor path completion (markdown link/image targets). */
+.cm-tooltip.cm-tooltip-autocomplete {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(8, 8, 11, 0.985);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  /* !important to beat CodeMirror's inline max-width (set from viewport space),
+     which otherwise lets the popup stretch the full editor width. */
+  max-width: 280px !important;
+}
+
+.cm-tooltip-autocomplete > ul {
+  /* Match the app chrome, not the editor's markdown/link styling at the
+     cursor, which otherwise leaks into the popup and looks out of place. */
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  max-height: 220px;
+  /* Inset the rows so the active row reads as a rounded pill rather than a
+     square band spanning the full width. */
+  padding: 4px;
+}
+
+.cm-tooltip-autocomplete > ul > li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+  text-decoration: none;
+}
+
+/* !important to beat CodeMirror's injected default selection background,
+   which otherwise renders the active row grey instead of pink. */
+.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: rgba(246, 92, 142, 0.28) !important;
+  color: #fff !important;
+}
+
+.cm-tooltip-autocomplete .cm-completionLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-pathCompletionIcon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--pink);
+}
+
+.cm-tooltip-autocomplete .cm-completionDetail {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 10px;
+}
+
+.settingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.settingRow strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+/* Animated toggle: a pill track with a knob that slides across as the state
+   flips. Built on a <button> so it overrides the shared button chrome. */
+.switch {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(9, 9, 12, 0.6);
+  transition: background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+}
+
+.switch:hover {
+  border-color: var(--border);
+  background: rgba(9, 9, 12, 0.78);
+}
+
+.switch .switchKnob {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--muted);
+  transform: translateY(-50%);
+  transition: transform 0.24s cubic-bezier(0.34, 1.36, 0.5, 1), background 0.22s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.switch-on {
+  border-color: transparent;
+  background: var(--pink);
+}
+
+.switch-on:hover {
+  background: var(--pink-bright);
+}
+
+.switch-on .switchKnob {
+  transform: translateY(-50%) translateX(20px);
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.commandPanel {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  background: var(--glass-surface);
+}
+
+.commandInput {
+  width: 100%;
+  height: 32px;
+  border-color: rgba(246, 92, 142, 0.34);
+}
+
+.noteResults {
+  display: grid;
+  gap: 1px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.noteResult {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 6px 0 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.noteResult-active {
+  background: rgba(246, 92, 142, 0.16);
+}
+
+.noteResultTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #fff;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.noteResultMeta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.noteResultActions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.noteResultAction {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.noteResult-active .noteResultAction,
+.noteResult-pinned .noteResultAction-pin {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.noteResultAction:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.noteResultAction-delete:hover {
+  background: rgba(246, 92, 142, 0.2);
+  color: #ff8aa9;
+}
+
+.noteResult-pinned .noteResultAction-pin {
+  color: var(--pink);
+}
+
+.emptyResults {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 8px;
+}
+
+.editorShell {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  /* Transparent so the editor shows the same uniform shell tint as the top
+     bar instead of stacking a second darker layer over it. */
+  background: transparent;
+}
+
+/* @uiw/react-codemirror wraps the editor in this div with no height of its
+   own; without filling the shell, .cm-editor's height:100% collapses and the
+   content overflows instead of scrolling. */
+.editorShell > .cm-theme-dark,
+.editorShell > .cm-theme {
+  flex: 1;
+  min-height: 0;
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 16px;
+  min-height: 28px;
+  padding: 6px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(16, 17, 22, 0.62);
+  color: var(--muted);
+  font-size: 10.5px;
+  user-select: none;
+}
+
+/* CodeMirror shell: make it feel like NaNotes, not an embedded IDE. */
+.cm-editor {
+  height: 100% !important;
+  background: transparent !important;
+  color: var(--text) !important;
+  font-size: 15px !important;
+}
+
+.cm-editor,
+.cm-editor * {
+  box-shadow: none !important;
+}
+
+.cm-editor.cm-focused {
+  outline: none !important;
+}
+
+.cm-scroller {
+  background: transparent !important;
+  color: var(--text) !important;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  line-height: 1.68 !important;
+  overflow: auto !important;
+  padding: 30px 42px !important;
+}
+
+.cm-content {
+  min-height: 100% !important;
+  padding: 0 !important;
+  caret-color: var(--pink-bright) !important;
+}
+
+.cm-line {
+  background: transparent !important;
+  color: var(--text) !important;
+  min-height: 1.68em !important;
+  padding: 0 0 0.18rem !important;
+}
+
+.cm-line:not(.cm-code-block-line) span {
+  color: var(--text) !important;
+}
+
+.cm-activeLine,
+.cm-activeLineGutter,
+.cm-focused .cm-activeLine,
+.cm-focused .cm-activeLineGutter {
+  background: transparent !important;
+}
+
+.cm-selectionBackground,
+.cm-focused .cm-selectionBackground {
+  background: rgba(246, 92, 142, 0.28) !important;
+}
+
+.cm-cursor {
+  border-left-color: var(--pink-bright) !important;
+  border-left-width: 2px !important;
+}
+
+.cm-placeholder {
+  color: #555b6b !important;
+}
+
+.cm-hidden-heading-marker {
+  display: inline-block;
+  width: 0;
+  overflow: hidden;
+}
+
+.cm-hidden-inline-marker {
+  display: inline-block;
+  width: 0;
+  overflow: hidden;
+}
+
+.cm-line:not(.cm-code-block-line) span.cm-list-bullet {
+  color: #ff7aa5 !important;
+  font-weight: 700;
+}
+
+.cm-image-preview {
+  padding: 0.4rem 0 0.5rem;
+}
+
+.cm-image-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  width: auto;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.cm-image-preview-error img {
+  display: none;
+}
+
+.cm-task-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05em;
+  height: 1.05em;
+  vertical-align: -0.18em;
+  border: 1.5px solid rgba(255, 255, 255, 0.32);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  color: transparent;
+  font-size: 0.82em;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.cm-task-checkbox:hover {
+  border-color: var(--pink-bright, #ff7aa5);
+}
+
+.cm-task-checkbox-checked {
+  border-color: var(--pink, #f65c8e);
+  background: var(--pink, #f65c8e);
+  color: var(--bg, #09090c);
+}
+
+.cm-heading-text {
+  color: #fff !important;
+  font-weight: 760 !important;
+  letter-spacing: -0.025em;
+}
+
+.cm-heading-1 { font-size: 1.72em !important; line-height: 1.28 !important; }
+.cm-heading-2 { font-size: 1.46em !important; line-height: 1.34 !important; }
+.cm-heading-3 { font-size: 1.25em !important; line-height: 1.4 !important; }
+.cm-heading-4 { font-size: 1.12em !important; line-height: 1.45 !important; }
+.cm-heading-5 { font-size: 1.04em !important; line-height: 1.5 !important; }
+.cm-heading-6 { font-size: 1em !important; line-height: 1.55 !important; }
+
+.cm-code-block-line {
+  background-color: rgba(8, 6, 11, 0.72);
+  border-left: 1px solid rgba(246, 92, 142, 0.5) !important;
+  border-right: 1px solid rgba(246, 92, 142, 0.5) !important;
+  padding-left: 0.9rem !important;
+  padding-right: 0.9rem !important;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  font-size: 0.9em;
+}
+
+.cm-code-block-body-first {
+  padding-top: 0.3rem !important;
+}
+
+.cm-code-block-last {
+  border-bottom: 1px solid rgba(246, 92, 142, 0.5) !important;
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+  padding-bottom: 0.45rem !important;
+  margin-bottom: 0.25rem;
+}
+
+/* Block-level header row that stands in for the opening ``` fence: the top edge
+   of the box, holding the language chip and the dismiss button. */
+.cm-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  box-sizing: border-box;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.8rem 0.3rem;
+  background-color: rgba(8, 6, 11, 0.72);
+  border: 1px solid rgba(246, 92, 142, 0.5);
+  border-bottom: none;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+
+.cm-code-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #6b7080;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cm-code-dismiss:hover {
+  background: rgba(246, 92, 142, 0.2);
+  color: #ff8aa9;
+}
+
+/* Header label that stands in for the opening ``` fence. Plain gray text with a
+   caret to hint at the language dropdown. */
+.cm-code-lang-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #8b90a0;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.66em;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.12s ease;
+}
+
+.cm-code-lang-chip::after {
+  content: '▾';
+  font-size: 0.9em;
+  line-height: 1;
+  letter-spacing: 0;
+  opacity: 0.7;
+}
+
+.cm-code-lang-chip:hover {
+  color: #c4c8d4;
+}
+
+/* Searchable language picker opened from the chip. */
+.cm-lang-dropdown {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  max-height: 280px;
+  padding: 6px;
+  border: 1px solid rgba(246, 92, 142, 0.35);
+  border-radius: 10px;
+  background: #14121a;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.cm-lang-dropdown-input {
+  margin-bottom: 6px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text, #e8e9ee);
+  font-size: 13px;
+  outline: none;
+}
+
+.cm-lang-dropdown-input:focus {
+  border-color: rgba(246, 92, 142, 0.6);
+}
+
+.cm-lang-dropdown-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* min-height:0 lets this flex child shrink below its content size so
+     overflow-y can actually scroll — without it the list keeps its full
+     height and the panel grows past max-height, spilling out of the window. */
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.cm-lang-dropdown-item {
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text, #e8e9ee);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cm-lang-dropdown-item:hover {
+  background: rgba(246, 92, 142, 0.18);
+}
+
+.cm-bold-text {
+  color: #fff !important;
+  font-weight: 760 !important;
+}
+
+.cm-italic-text {
+  color: var(--text) !important;
+  font-style: italic !important;
+}
+
+.cm-bold-text.cm-italic-text,
+.cm-italic-text .cm-bold-text,
+.cm-bold-text .cm-italic-text {
+  color: #fff !important;
+  font-style: italic !important;
+  font-weight: 760 !important;
+}
+
+.cm-editor .tok-emphasis,
+.cm-editor .ͼi {
+  font-style: italic !important;
+}
+
+.cm-line:not(.cm-code-block-line) span.cm-link {
+  color: var(--pink-bright) !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.cm-line:not(.cm-code-block-line) span.cm-link:hover {
+  color: #ff9bbb !important;
+}
+
+/* While Cmd/Ctrl is held, links get a pointer cursor so it's clear a click
+   will open them (a plain click still just positions the caret). */
+.cm-mod-held .cm-link,
+.cm-mod-held .cm-image-preview {
+  cursor: pointer;
+}
