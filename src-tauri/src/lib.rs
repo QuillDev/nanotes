@@ -261,7 +261,7 @@ fn list_notes(notes_dir: String, query: String) -> Result<Vec<NoteEntry>, String
     let query = query.trim().to_string();
 
     if query.is_empty() {
-        notes.sort_by(|a, b| b.modified.cmp(&a.modified));
+        notes.sort_by_key(|candidate| std::cmp::Reverse(candidate.modified));
         return Ok(notes
             .into_iter()
             .take(MAX_SEARCH_RESULTS)

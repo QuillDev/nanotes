@@ -1120,12 +1120,17 @@ function openLanguageDropdown(view: EditorView, anchor: HTMLElement, linePos: nu
 
   input.addEventListener('input', () => render(input.value));
   input.addEventListener('keydown', event => {
+    // Keep these keys local to the dropdown — otherwise they bubble to the
+    // app-level window keydown handler, where Escape would hide the whole
+    // overlay instead of just closing this menu.
     if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       close();
       view.focus();
     } else if (event.key === 'Enter') {
       event.preventDefault();
+      event.stopPropagation();
       const first = list.querySelector<HTMLButtonElement>('.cm-lang-dropdown-item');
       first?.dispatchEvent(new MouseEvent('mousedown'));
     }
@@ -1575,6 +1580,9 @@ function PathInput({
             event.preventDefault();
             accept(suggestions[activeIndex]);
           } else if (event.key === 'Escape') {
+            // Dismiss only the suggestion list; don't let Escape bubble to the
+            // app handler and close the surrounding settings panel too.
+            event.stopPropagation();
             setOpen(false);
           }
         }}
@@ -1670,7 +1678,7 @@ async function pathCompletionSource(context: CompletionContext): Promise<Complet
 function useDebouncedSave(
   state: NoteState,
   setState: React.Dispatch<React.SetStateAction<NoteState>>,
-  noteGenRef: React.MutableRefObject<number>,
+  noteGenRef: React.RefObject<number>,
 ) {
   React.useEffect(() => {
     if (state.status === 'loading' || state.content === state.savedContent) {
@@ -1761,6 +1769,10 @@ function App() {
   // and drop their result if it changed, so a slow save from the previous note
   // never lands on (and appears to block) the note now in the editor.
   const noteGenRef = React.useRef(0);
+  // The notes directory currently loaded into the editor. The settings field
+  // commits on every blur, so this lets loadNote ignore commits that don't
+  // actually change the folder (see loadNote).
+  const loadedDirRef = React.useRef<string | null>(null);
 
   // Persist the note currently in the editor if it has unsaved changes. The
   // debounced autosave is cancelled the instant we switch notes, so without this
@@ -1843,6 +1855,17 @@ function App() {
     // An empty/whitespace folder isn't a valid target; fall back to the default
     // and reflect it back into the field so it never sits blank.
     const notesDir = state.notesDir.trim() || DEFAULT_NOTES_DIR;
+    // Nothing to reload if the folder hasn't actually changed since the last
+    // load (e.g. blurring the settings field without editing it). Re-reading
+    // would be wasted work and would clobber in-memory edits not yet flushed —
+    // just normalise a blank/whitespace field back to the resolved value.
+    if (loadedDirRef.current === notesDir) {
+      if (notesDir !== state.notesDir) {
+        setState(prev => ({ ...prev, notesDir }));
+      }
+      return;
+    }
+    loadedDirRef.current = notesDir;
     noteGenRef.current += 1;
     setState(prev => ({ ...prev, notesDir, status: 'loading', message: 'Loading…' }));
     if (!IS_TAURI) {
@@ -1872,6 +1895,8 @@ function App() {
         }));
       })
       .catch((error: unknown) => {
+        // Forget the failed directory so committing again retries the load.
+        loadedDirRef.current = null;
         setState(prev => ({
           ...prev,
           status: 'error',
@@ -1889,6 +1914,9 @@ function App() {
     setState(prev => ({ ...prev, notePath, status: 'loading', message: 'Loading…' }));
 
     if (!IS_TAURI) {
+      // No filesystem to read from in browser preview; just settle the status.
+      setState(prev => ({ ...prev, status: 'saved', message: 'Browser preview' }));
+      focusEditor();
       return;
     }
 
@@ -1936,17 +1964,12 @@ function App() {
     setSettingsOpen(false);
     setSearchQuery('');
 
+    // The Tauri note list is fetched by the searchOpen/searchQuery effect below;
+    // here we only seed the browser-preview list, which that effect skips.
     if (!IS_TAURI) {
       setNotes([{ path: DEFAULT_NOTE, title: 'NaNotes', modifiedMs: 0 }]);
-      return;
     }
-
-    void invoke<NoteEntry[]>('list_notes', { notesDir: state.notesDir, query: searchQuery })
-      .then(setNotes)
-      .catch((error: unknown) => {
-        setState(prev => ({ ...prev, status: 'error', message: String(error) }));
-      });
-  }, [searchQuery, state.notesDir]);
+  }, []);
 
   const togglePin = React.useCallback((notePath: string) => {
     setPinnedPaths(prev => {
@@ -1994,6 +2017,9 @@ function App() {
       });
   }, [launchAtLogin, launchAtLoginReady]);
 
+  // Load the initial note once on mount. Subsequent folder/note changes are
+  // driven explicitly by loadNote/openNote/createNewNote, so loadNote is
+  // deliberately omitted from the dependency list.
   React.useEffect(() => {
     loadNote();
   }, []);
