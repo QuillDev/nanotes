@@ -115,7 +115,9 @@ function formatHotkey(accelerator: string): string {
 }
 const FRAME_KEY = 'nanotes:windowFrame';
 const FRAME_SHAPE_KEY = 'nanotes:windowFrameShape';
-const CURRENT_FRAME_SHAPE = 'portrait-notepad-v1';
+// Bumped to v2 to discard frames saved by the buggy build that opened the window
+// at half size (below the drag minimum) on HiDPI displays.
+const CURRENT_FRAME_SHAPE = 'portrait-notepad-v2';
 const IS_TAURI = '__TAURI_INTERNALS__' in window;
 const SAMPLE_NOTE = `# NaNotes
 

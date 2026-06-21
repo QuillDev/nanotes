@@ -667,8 +667,10 @@ input:focus {
   gap: 1px;
   /* Show at most 5 rows (28px each + 1px gaps), then scroll inside (.morphScroll
      gives the pink bar). The island's measured height caps here too, so it stops
-     growing at 5 results. */
+     growing at 5 results. overflow-x: hidden because overflow-y: auto otherwise
+     computes overflow-x to auto, letting long titles scroll the list sideways. */
   max-height: 144px;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -677,6 +679,9 @@ input:focus {
   align-items: center;
   gap: 8px;
   height: 28px;
+  /* min-width: 0 so this grid item can shrink to the track; without it the row's
+     auto min-width keeps it as wide as the (nowrap) title and overflows. */
+  min-width: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -715,16 +720,10 @@ input:focus {
   border: 0;
   border-radius: 5px;
   background: transparent;
+  /* Always visible (muted), brightening on hover — not just on the active row.
+     The title reserves space for these and ellipsis-truncates if it's too long. */
   color: var(--muted);
   cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.noteResult-active .noteResultAction,
-.noteResult-pinned .noteResultAction-pin {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .noteResultAction:hover {

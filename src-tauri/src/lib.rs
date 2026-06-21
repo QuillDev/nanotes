@@ -9,7 +9,7 @@ use nucleo_matcher::{
     Config, Matcher,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WindowEvent};
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const DEFAULT_WINDOW_WIDTH: i32 = 560;
@@ -380,14 +380,17 @@ fn hide_overlay(app: &AppHandle) {
 fn configure_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(true);
+        // Size in *logical* points so it matches tauri.conf (and the drag minimum,
+        // which is logical). Using PhysicalSize here made the window open at half
+        // size on a 2x display — below the minimum the user could drag to.
+        let width = f64::from(DEFAULT_WINDOW_WIDTH);
+        let height = f64::from(DEFAULT_WINDOW_HEIGHT);
+        let _ = window.set_size(LogicalSize::new(width, height));
         if let Some(monitor) = window.current_monitor().ok().flatten() {
-            let size = monitor.size();
-            let width = DEFAULT_WINDOW_WIDTH;
-            let height = DEFAULT_WINDOW_HEIGHT;
-            let x = ((size.width as i32 - width) / 2).max(40);
-            let y = ((size.height as i32 - height) / 2).max(40);
-            let _ = window.set_size(PhysicalSize::new(width as u32, height as u32));
-            let _ = window.set_position(PhysicalPosition::new(x, y));
+            let monitor_size = monitor.size().to_logical::<f64>(monitor.scale_factor());
+            let x = ((monitor_size.width - width) / 2.0).max(40.0);
+            let y = ((monitor_size.height - height) / 2.0).max(40.0);
+            let _ = window.set_position(LogicalPosition::new(x, y));
         }
     }
 }
