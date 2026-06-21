@@ -2,9 +2,7 @@ class Nanotes < Formula
   desc "Nako-styled floating Markdown scratchpad backed by local files"
   homepage "https://github.com/QuillDev/nanotes"
   url "https://github.com/QuillDev/nanotes/archive/refs/tags/v0.1.0.tar.gz"
-  # Replace with the real checksum after pushing the v0.1.0 tag:
-  #   brew fetch --build-from-source ./Formula/nanotes.rb   # prints the sha256
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "01f69641cff194574aea7de5577a958cb4dd1123c88dba1d9345e4749fa69b88"
   license "MIT"
   head "https://github.com/QuillDev/nanotes.git", branch: "main"
 
