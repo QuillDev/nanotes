@@ -1,8 +1,8 @@
 class Nanotes < Formula
   desc "Nako-styled floating Markdown scratchpad backed by local files"
   homepage "https://github.com/QuillDev/nanotes"
-  url "https://github.com/QuillDev/nanotes/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "01f69641cff194574aea7de5577a958cb4dd1123c88dba1d9345e4749fa69b88"
+  url "https://github.com/QuillDev/nanotes/archive/refs/tags/v0.2.0.tar.gz"
+  sha256 "2cffb1bf5aa518fd13ed7319b973a259f0fc3f07985828748cb5899988f93307"
   license "MIT"
   head "https://github.com/QuillDev/nanotes.git", branch: "main"
 
@@ -33,8 +33,8 @@ class Nanotes < Formula
 
         ln -sf "#{opt_prefix}/NaNotes.app" /Applications/NaNotes.app
 
-      Then press Cmd+Shift+N to toggle the overlay from any app. Open settings
-      (Cmd+O) to enable "Launch at login".
+      Then press Option+N to toggle the overlay from any app (rebindable in
+      settings). Open settings (Cmd+O) to enable "Launch at login".
     EOS
   end
 
