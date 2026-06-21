@@ -10,10 +10,14 @@ use nucleo_matcher::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WindowEvent};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const DEFAULT_WINDOW_WIDTH: i32 = 560;
 const DEFAULT_WINDOW_HEIGHT: i32 = 760;
+/// Default global hotkey that toggles the overlay (Option/Alt + N). The
+/// accelerator is parsed by the global-shortcut plugin; the frontend can
+/// override it at runtime via the `set_hotkey` command.
+const DEFAULT_HOTKEY: &str = "alt+KeyN";
 const MAX_SEARCH_RESULTS: usize = 10;
 const MAX_PATH_SUGGESTIONS: usize = 12;
 
@@ -388,15 +392,43 @@ fn configure_window(app: &AppHandle) {
     }
 }
 
-fn register_hotkey(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyN);
+/// Register `accelerator` as the overlay toggle, replacing any shortcut that was
+/// previously registered. The accelerator uses the plugin's textual format, e.g.
+/// "alt+KeyN" or "super+shift+KeyN".
+fn apply_hotkey(app: &AppHandle, accelerator: &str) -> Result<(), String> {
+    let shortcut: Shortcut = accelerator
+        .parse()
+        .map_err(|err| format!("Invalid hotkey '{accelerator}': {err:?}"))?;
+    let global_shortcut = app.global_shortcut();
+    // Clear the previous binding so re-registering a new combo doesn't leave the
+    // old one live (and so the same combo isn't double-registered, which errors).
+    let _ = global_shortcut.unregister_all();
     let app_handle = app.clone();
-    app.global_shortcut()
+    global_shortcut
         .on_shortcut(shortcut, move |_app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
                 toggle_overlay(&app_handle);
             }
-        })?;
+        })
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_hotkey(app: AppHandle, accelerator: String) -> Result<(), String> {
+    apply_hotkey(&app, &accelerator)
+}
+
+/// Temporarily unregister the overlay shortcut so the webview can capture key
+/// presses (e.g. while the settings hotkey recorder is listening) instead of the
+/// OS swallowing the combo to toggle the window.
+#[tauri::command]
+fn clear_hotkey(app: AppHandle) {
+    let _ = app.global_shortcut().unregister_all();
+}
+
+fn register_hotkey(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    apply_hotkey(app, DEFAULT_HOTKEY)?;
     Ok(())
 }
 
@@ -411,7 +443,9 @@ pub fn run() {
             write_note,
             list_notes,
             delete_note,
-            suggest_paths
+            suggest_paths,
+            set_hotkey,
+            clear_hotkey
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

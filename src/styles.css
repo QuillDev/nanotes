@@ -15,6 +15,57 @@
   --pink-deep: #d8456f;
   --ok: #4ade80;
   --bad: #f87171;
+  /* Snappy spring-ish ease shared by every morphing surface (search island,
+     language dropdown). See .morphSurface and src/morph.ts. */
+  --morph-ease: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Reusable "morph" surface: clips its overflow and transitions width/height so a
+   JS-driven height (see src/morph.ts) animates it growing from a pill/sliver into
+   a content-sized panel. Consumers add their own box-shadow + positioning. */
+.morphSurface {
+  overflow: hidden;
+  border-radius: 15px;
+  background: var(--glass-surface-2);
+  transition: width 0.32s var(--morph-ease), height 0.32s var(--morph-ease),
+    box-shadow 0.24s ease;
+}
+
+/* A row that fades in once when first mounted (added to the list). */
+.morphRow {
+  animation: morphRowIn 0.18s ease both;
+}
+
+@keyframes morphRowIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Pink-accent scrollbar for a morph panel's scrollable area. */
+.morphScroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--pink) transparent;
+}
+
+.morphScroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.morphScroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.morphScroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--pink);
+}
+
+.morphScroll::-webkit-scrollbar-thumb:hover {
+  background: var(--pink-bright);
 }
 
 * {
@@ -68,6 +119,7 @@ input {
 }
 
 .topbar {
+  position: relative;
   display: flex;
   align-items: center;
   min-height: 34px;
@@ -75,6 +127,120 @@ input {
   background: transparent;
   cursor: default;
   user-select: none;
+}
+
+/* The search "island": a single morphing surface absolutely centered in the
+   topbar. At rest it's a pill showing the current note title; when open it grows
+   downward — taller, wider, less-rounded — into a panel that draws over the
+   editor, Dynamic-Island style. overflow:hidden clips the results until the
+   height (driven from JS) has grown to reveal them. The cubic-bezier is a snappy
+   spring-ish ease so the morph reads as one continuous motion. */
+/* Builds on .morphSurface (overflow clip, 15px radius, glass bg, width/height
+   transition). The 15px radius is exactly half the 30px pill height, so it's a
+   fully rounded pill at rest; since the height only ever grows it's never clamped,
+   keeping the top corners constant as the island expands straight down. */
+.island {
+  position: absolute;
+  left: 50%;
+  top: 7px;
+  transform: translateX(-50%);
+  z-index: 30;
+  width: min(46%, 200px);
+  height: 30px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.island-open {
+  width: min(50vw, 290px);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.09), 0 18px 44px rgba(0, 0, 0, 0.5);
+}
+
+/* The pill row (icon + title at rest, icon + input when open). Fixed to the
+   pill height so it's the only thing visible before the island grows. */
+.islandBar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 30px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+  cursor: text;
+}
+
+.island-open .islandBar {
+  justify-content: flex-start;
+  height: 32px;
+}
+
+.islandResults {
+  padding: 2px 6px 6px;
+}
+
+.topbarSearchIcon {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.topbarSearchLabel {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbarSearchInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 12.5px;
+  padding: 0;
+}
+
+.topbarSearchInput:focus {
+  outline: none;
+}
+
+/* Pushed to the right edge of the topbar; the traffic lights sit top-left under
+   the Overlay title bar, so this side is clear. Not a drag region, so the
+   buttons stay clickable instead of moving the window. */
+.topbarActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.topbarButton {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.topbarButton:hover {
+  border-color: transparent;
+  background: var(--glass-surface-2);
+  color: var(--pink-bright);
 }
 
 .title {
@@ -467,26 +633,43 @@ input:focus {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
-.commandPanel {
-  display: grid;
-  gap: 6px;
-  padding: 8px 10px 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
-  background: var(--glass-surface);
+/* Hotkey recorder: a pill that shows the current combo and, while recording,
+   captures the next key press. Sized to comfortably hold a few glyphs. */
+.hotkeyButton {
+  flex: 0 0 auto;
+  min-width: 64px;
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(9, 9, 12, 0.6);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  transition: background 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
 }
 
-.commandInput {
-  width: 100%;
-  height: 32px;
-  border-color: rgba(246, 92, 142, 0.34);
+.hotkeyButton:hover {
+  background: rgba(9, 9, 12, 0.78);
+}
+
+.hotkeyButton-recording {
+  border-color: var(--pink);
+  color: var(--pink-bright);
+  box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.18);
+  letter-spacing: normal;
+  font-weight: 550;
 }
 
 .noteResults {
   display: grid;
   gap: 1px;
-  max-height: 240px;
-  overflow: auto;
+  /* Show at most 5 rows (28px each + 1px gaps), then scroll inside (.morphScroll
+     gives the pink bar). The island's measured height caps here too, so it stops
+     growing at 5 results. */
+  max-height: 144px;
+  overflow-y: auto;
 }
 
 .noteResult {
@@ -514,13 +697,6 @@ input:focus {
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.noteResultMeta {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
 }
 
 .noteResultActions {
@@ -748,7 +924,9 @@ input:focus {
 .cm-heading-6 { font-size: 1em !important; line-height: 1.55 !important; }
 
 .cm-code-block-line {
-  background-color: rgba(8, 6, 11, 0.72);
+  /* !important to beat `.cm-line`/`.cm-activeLine` (both `background: transparent
+     !important`); this rule is later in the file so it wins among !important. */
+  background-color: #0c0a12 !important;
   border-left: 1px solid rgba(246, 92, 142, 0.5) !important;
   border-right: 1px solid rgba(246, 92, 142, 0.5) !important;
   padding-left: 0.9rem !important;
@@ -779,7 +957,7 @@ input:focus {
   box-sizing: border-box;
   margin-top: 0.25rem;
   padding: 0.4rem 0.8rem 0.3rem;
-  background-color: rgba(8, 6, 11, 0.72);
+  background-color: #0c0a12;
   border: 1px solid rgba(246, 92, 142, 0.5);
   border-bottom: none;
   border-top-left-radius: 8px;
@@ -840,26 +1018,28 @@ input:focus {
 }
 
 /* Searchable language picker opened from the chip. */
+/* The language picker reuses the search island's morph: .morphSurface gives the
+   grow/shrink animation, rounded clip and glass background; morphOpen/morphClose
+   in the JS drive the height. The chip header that triggers it is unchanged. */
 .cm-lang-dropdown {
   position: fixed;
   z-index: 1000;
-  display: flex;
-  flex-direction: column;
   width: 240px;
-  max-height: 280px;
-  padding: 6px;
-  border: 1px solid rgba(246, 92, 142, 0.35);
-  border-radius: 10px;
-  background: #14121a;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.09), 0 18px 44px rgba(0, 0, 0, 0.5);
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
 }
 
+.cm-lang-dropdown-content {
+  padding: 6px;
+}
+
 .cm-lang-dropdown-input {
+  display: block;
+  width: 100%;
   margin-bottom: 6px;
   padding: 7px 10px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 7px;
+  border-radius: 9px;
   background: rgba(0, 0, 0, 0.35);
   color: var(--text, #e8e9ee);
   font-size: 13px;
@@ -871,18 +1051,19 @@ input:focus {
 }
 
 .cm-lang-dropdown-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 1px;
-  /* min-height:0 lets this flex child shrink below its content size so
-     overflow-y can actually scroll — without it the list keeps its full
-     height and the panel grows past max-height, spilling out of the window. */
-  min-height: 0;
+  /* Show 5 rows (32px each + 1px gaps), then scroll inside. The morph measures
+     this capped height, so the panel stops growing at 5 items too. */
+  max-height: 164px;
   overflow-y: auto;
 }
 
 .cm-lang-dropdown-item {
-  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
   border: none;
   border-radius: 6px;
   background: transparent;

@@ -23,6 +23,7 @@ import { openPath, openUrl } from '@tauri-apps/plugin-opener';
 import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
+import { morphClose, morphOpen, syncMorphHeight, useMorphHeight } from './morph';
 import './styles.css';
 
 interface NoteState {
@@ -54,6 +55,64 @@ const DEFAULT_NOTES_DIR = '~/.nanotes';
 const DEFAULT_NOTE = 'Untitled.md';
 const SAVE_DELAY_MS = 500;
 const PINNED_KEY = 'nanotes:pinnedPaths';
+const HOTKEY_KEY = 'nanotes:hotkey';
+// Matches the Rust DEFAULT_HOTKEY: Option/Alt + N. Stored in the plugin's
+// accelerator format ("alt+KeyN") so it round-trips straight to `set_hotkey`.
+const DEFAULT_HOTKEY = 'alt+KeyN';
+const HOTKEY_MODIFIER_CODES = new Set([
+  'ShiftLeft',
+  'ShiftRight',
+  'ControlLeft',
+  'ControlRight',
+  'AltLeft',
+  'AltRight',
+  'MetaLeft',
+  'MetaRight',
+]);
+const HOTKEY_SYMBOLS: Record<string, string> = {
+  super: '⌘',
+  cmd: '⌘',
+  command: '⌘',
+  meta: '⌘',
+  commandorcontrol: '⌘',
+  cmdorctrl: '⌘',
+  control: '⌃',
+  ctrl: '⌃',
+  alt: '⌥',
+  option: '⌥',
+  shift: '⇧',
+};
+
+// Display name for the note currently in the editor: the first line with any
+// leading "#" markers stripped, mirroring the backend's title_from_content so
+// the topbar label matches what search shows. Falls back to "Untitled".
+function titleFromContent(content: string): string {
+  const firstLine = content.split('\n', 1)[0]?.trim() ?? '';
+  const withoutHeading = firstLine.replace(/^#+/, '').trim();
+  return withoutHeading || 'Untitled';
+}
+
+// Render an accelerator like "alt+KeyN" as the macOS glyph string "⌥N".
+function formatHotkey(accelerator: string): string {
+  return accelerator
+    .split('+')
+    .map(part => {
+      const symbol = HOTKEY_SYMBOLS[part.toLowerCase()];
+      if (symbol) {
+        return symbol;
+      }
+      const keyMatch = /^Key([A-Z])$/.exec(part);
+      if (keyMatch) {
+        return keyMatch[1];
+      }
+      const digitMatch = /^Digit([0-9])$/.exec(part);
+      if (digitMatch) {
+        return digitMatch[1];
+      }
+      return part;
+    })
+    .join('');
+}
 const FRAME_KEY = 'nanotes:windowFrame';
 const FRAME_SHAPE_KEY = 'nanotes:windowFrameShape';
 const CURRENT_FRAME_SHAPE = 'portrait-notepad-v1';
@@ -1045,47 +1104,61 @@ function openLanguageDropdown(view: EditorView, anchor: HTMLElement, linePos: nu
     return;
   }
   const panel = document.createElement('div');
-  panel.className = 'cm-lang-dropdown';
+  panel.className = 'cm-lang-dropdown morphSurface';
   const input = document.createElement('input');
   input.className = 'cm-lang-dropdown-input';
   input.type = 'text';
   input.placeholder = 'Search languages…';
   const list = document.createElement('div');
-  list.className = 'cm-lang-dropdown-list';
-  panel.append(input, list);
+  list.className = 'cm-lang-dropdown-list morphScroll';
+  // Padding lives on this inner wrapper (a child) rather than the panel so its
+  // full height — bottom padding included — is counted in panel.scrollHeight when
+  // the morph measures it. A scroll container's own bottom padding isn't.
+  const content = document.createElement('div');
+  content.className = 'cm-lang-dropdown-content';
+  content.append(input, list);
+  panel.append(content);
 
   document.body.appendChild(panel);
 
-  // Position after mounting so the panel's real size is known, then keep it
-  // inside the viewport: clamp horizontally and flip above the chip when there
-  // isn't room below. A webview can't paint outside its window, so an
-  // unconstrained `fixed` panel near an edge would just get clipped.
+  // Drop below the whole code-block header (the chip lives *inside* it, so
+  // anchoring to the chip would overlap the header). Left-align to the chip.
+  const header = (anchor.closest('.cm-code-header') as HTMLElement | null) ?? anchor;
+
+  // Keep the panel inside the viewport: clamp horizontally and flip above the
+  // header when there isn't room below. A webview can't paint outside its window,
+  // so an unconstrained `fixed` panel near an edge would just get clipped.
   const position = () => {
-    const anchorRect = anchor.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
     const panelRect = panel.getBoundingClientRect();
     const margin = 8;
-    const gap = 4;
+    const gap = 0;
 
-    let left = anchorRect.left;
+    let left = headerRect.left;
     const maxLeft = window.innerWidth - panelRect.width - margin;
     left = Math.min(Math.max(margin, left), Math.max(margin, maxLeft));
 
-    const below = anchorRect.bottom + gap;
+    const below = headerRect.bottom + gap;
     const fitsBelow = below + panelRect.height + margin <= window.innerHeight;
     const top = fitsBelow
       ? below
-      : Math.max(margin, anchorRect.top - gap - panelRect.height);
+      : Math.max(margin, headerRect.top - gap - panelRect.height);
 
     panel.style.left = `${Math.round(left)}px`;
     panel.style.top = `${Math.round(top)}px`;
   };
-  position();
   window.addEventListener('resize', position);
 
+  let closing = false;
   const close = () => {
+    if (closing) {
+      return;
+    }
+    closing = true;
     document.removeEventListener('mousedown', onOutside, true);
     window.removeEventListener('resize', position);
-    panel.remove();
+    // Collapse with the shared morph animation, then remove.
+    morphClose(panel, () => panel.remove());
   };
   const onOutside = (event: MouseEvent) => {
     if (!panel.contains(event.target as Node)) {
@@ -1098,7 +1171,10 @@ function openLanguageDropdown(view: EditorView, anchor: HTMLElement, linePos: nu
     view.focus();
   };
 
-  const render = (query: string) => {
+  // `animate` adds the per-row fade only on the first render (the open). On later
+  // re-renders (filtering) the whole list is rebuilt, so animating every row would
+  // flicker on each keystroke — there we just re-fit the panel height instead.
+  const render = (query: string, animate: boolean) => {
     const q = query.trim().toLowerCase();
     list.textContent = '';
     const options: LanguageOption[] = [{ name: 'Plain text', token: '' }, ...languageOptions];
@@ -1108,7 +1184,7 @@ function openLanguageDropdown(view: EditorView, anchor: HTMLElement, linePos: nu
     for (const option of filtered.slice(0, 60)) {
       const item = document.createElement('button');
       item.type = 'button';
-      item.className = 'cm-lang-dropdown-item';
+      item.className = animate ? 'cm-lang-dropdown-item morphRow' : 'cm-lang-dropdown-item';
       item.textContent = option.name;
       item.addEventListener('mousedown', event => {
         event.preventDefault();
@@ -1118,7 +1194,12 @@ function openLanguageDropdown(view: EditorView, anchor: HTMLElement, linePos: nu
     }
   };
 
-  input.addEventListener('input', () => render(input.value));
+  input.addEventListener('input', () => {
+    render(input.value, false);
+    // Grow/shrink the panel to fit the filtered list, then keep it on-screen.
+    syncMorphHeight(panel);
+    position();
+  });
   input.addEventListener('keydown', event => {
     // Keep these keys local to the dropdown — otherwise they bubble to the
     // app-level window keydown handler, where Escape would hide the whole
@@ -1136,9 +1217,15 @@ function openLanguageDropdown(view: EditorView, anchor: HTMLElement, linePos: nu
     }
   });
 
-  render('');
+  render('', true);
+  // Position using the full (natural) height, then grow the panel up from a
+  // sliver into that height — the same morph the search island uses.
+  position();
+  morphOpen(panel);
   document.addEventListener('mousedown', onOutside, true);
-  input.focus();
+  // preventScroll: the panel is mid-grow (clipped to a sliver), so a normal focus
+  // would scroll the not-yet-revealed input into view and jolt the page.
+  input.focus({ preventScroll: true });
 }
 
 // Block-level header that stands in for the opening ``` line. Being a block
@@ -1455,35 +1542,6 @@ function TrashIcon() {
   );
 }
 
-function formatRelativeTime(ms: number): string {
-  if (!ms) {
-    return '';
-  }
-  const diff = Date.now() - ms;
-  const minute = 60_000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-  if (diff < minute) {
-    return 'just now';
-  }
-  if (diff < hour) {
-    return `${Math.round(diff / minute)}m ago`;
-  }
-  if (diff < day) {
-    return `${Math.round(diff / hour)}h ago`;
-  }
-  if (diff < 7 * day) {
-    return `${Math.round(diff / day)}d ago`;
-  }
-  if (diff < 30 * day) {
-    return `${Math.round(diff / (7 * day))}w ago`;
-  }
-  if (diff < 365 * day) {
-    return `${Math.round(diff / (30 * day))}mo ago`;
-  }
-  return `${Math.round(diff / (365 * day))}y ago`;
-}
-
 async function hideOverlay() {
   await saveWindowFrame();
   if (IS_TAURI) {
@@ -1742,6 +1800,10 @@ function App() {
     message: 'Ready',
   });
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [hotkey, setHotkey] = React.useState<string>(
+    () => window.localStorage.getItem(HOTKEY_KEY)?.trim() || DEFAULT_HOTKEY,
+  );
+  const [recordingHotkey, setRecordingHotkey] = React.useState(false);
   const [launchAtLogin, setLaunchAtLogin] = React.useState(false);
   const [launchAtLoginReady, setLaunchAtLoginReady] = React.useState(!IS_TAURI);
   const [searchOpen, setSearchOpen] = React.useState(false);
@@ -2017,6 +2079,83 @@ function App() {
       });
   }, [launchAtLogin, launchAtLoginReady]);
 
+  // Persist the chosen hotkey and (re)register it with the backend whenever it
+  // changes. This also runs once on mount to apply the stored override over the
+  // backend's compiled-in default. The very first run is silent so it doesn't
+  // clobber the initial "Ready" status; later changes report success/failure.
+  const hotkeyAppliedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!IS_TAURI) {
+      window.localStorage.setItem(HOTKEY_KEY, hotkey);
+      return;
+    }
+    const isInitial = !hotkeyAppliedRef.current;
+    hotkeyAppliedRef.current = true;
+    void invoke('set_hotkey', { accelerator: hotkey })
+      .then(() => {
+        // Only persist once the backend has accepted the combo, so a rejected
+        // accelerator never becomes the value reloaded (broken) on next launch.
+        window.localStorage.setItem(HOTKEY_KEY, hotkey);
+        if (!isInitial) {
+          setState(prev => ({ ...prev, status: 'saved', message: `Hotkey set to ${formatHotkey(hotkey)}` }));
+        }
+      })
+      .catch((error: unknown) => {
+        setState(prev => ({ ...prev, status: 'error', message: `Hotkey: ${String(error)}` }));
+      });
+  }, [hotkey]);
+
+  // Latest hotkey, readable from the recording effect's cleanup without making
+  // the effect depend on (and thus restart on) every hotkey change.
+  const hotkeyRef = React.useRef(hotkey);
+  hotkeyRef.current = hotkey;
+
+  // While recording, listen for the next combo on the window in the capture
+  // phase so it lands regardless of focus and beats CodeMirror / global key
+  // handlers (which would otherwise eat the press). The live OS shortcut is
+  // suspended for the duration so pressing the current hotkey gets recorded
+  // instead of toggling the overlay; it's re-armed when recording ends.
+  React.useEffect(() => {
+    if (!recordingHotkey) {
+      return;
+    }
+    if (IS_TAURI) {
+      void invoke('clear_hotkey').catch(() => undefined);
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.code === 'Escape') {
+        setRecordingHotkey(false);
+        return;
+      }
+      // Ignore lone modifier presses — keep listening until a real key arrives.
+      if (HOTKEY_MODIFIER_CODES.has(event.code)) {
+        return;
+      }
+      const modifiers: string[] = [];
+      if (event.metaKey) modifiers.push('super');
+      if (event.ctrlKey) modifiers.push('control');
+      if (event.altKey) modifiers.push('alt');
+      if (event.shiftKey) modifiers.push('shift');
+      if (modifiers.length === 0) {
+        setState(prev => ({ ...prev, status: 'error', message: 'Hotkey needs a modifier (⌘, ⌥, ⌃, or ⇧)' }));
+        return;
+      }
+      setHotkey([...modifiers, event.code].join('+'));
+      setRecordingHotkey(false);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      // Re-arm the shortcut. If a new combo was captured, the hotkey effect
+      // re-registers it right after this cleanup, making this a harmless no-op.
+      if (IS_TAURI) {
+        void invoke('set_hotkey', { accelerator: hotkeyRef.current }).catch(() => undefined);
+      }
+    };
+  }, [recordingHotkey]);
+
   // Load the initial note once on mount. Subsequent folder/note changes are
   // driven explicitly by loadNote/openNote/createNewNote, so loadNote is
   // deliberately omitted from the dependency list.
@@ -2143,9 +2282,140 @@ function App() {
     setSelectedIndex(0);
   }, [filteredNotes, searchOpen]);
 
+  // The search "island" morphs from a pill into a panel that grows downward over
+  // the editor (Dynamic-Island style), via the shared morph animation. The hook
+  // measures the open content height and feeds it back as the inline height so
+  // CSS can transition the grow/shrink — on open/close and as results change. At
+  // rest the height is left unset so the CSS pill height shows through.
+  const { ref: islandRef, height: islandHeight } = useMorphHeight<HTMLDivElement>(searchOpen, [filteredNotes]);
+
   return (
     <main className="shell">
-      <header className="topbar" data-tauri-drag-region />
+      <header className="topbar" data-tauri-drag-region>
+        <div
+          className={searchOpen ? 'morphSurface island island-open' : 'morphSurface island'}
+          ref={islandRef}
+          style={islandHeight !== undefined ? { height: islandHeight } : undefined}
+        >
+          {searchOpen ? (
+            <div className="islandBar">
+              <svg className="topbarSearchIcon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.2-3.2" />
+              </svg>
+              <input
+                autoFocus
+                className="topbarSearchInput"
+                placeholder="Search notes…"
+                value={searchQuery}
+                onChange={event => setSearchQuery(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setSelectedIndex(index => Math.min(index + 1, filteredNotes.length - 1));
+                  } else if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setSelectedIndex(index => Math.max(index - 1, 0));
+                  } else if (event.key === 'Enter') {
+                    event.preventDefault();
+                    const note = filteredNotes[selectedIndex];
+                    if (note) {
+                      openNote(note.path);
+                    }
+                  }
+                }}
+              />
+            </div>
+          ) : (
+            <button
+              className="islandBar"
+              type="button"
+              aria-label="Search notes"
+              title="Search notes (⌘P)"
+              onClick={openSearch}
+            >
+              <svg className="topbarSearchIcon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.2-3.2" />
+              </svg>
+              <span className="topbarSearchLabel">{titleFromContent(state.content)}</span>
+            </button>
+          )}
+          {searchOpen ? (
+            <div className="islandResults">
+              <div className="noteResults morphScroll">
+                {filteredNotes.map((note, index) => {
+                  const pinned = pinnedPaths.includes(note.path);
+                  const classNames = ['noteResult', 'morphRow'];
+                  if (index === selectedIndex) {
+                    classNames.push('noteResult-active');
+                  }
+                  if (pinned) {
+                    classNames.push('noteResult-pinned');
+                  }
+                  return (
+                    <div
+                      key={note.path}
+                      ref={element => {
+                        if (index === selectedIndex) {
+                          element?.scrollIntoView({ block: 'nearest' });
+                        }
+                      }}
+                      className={classNames.join(' ')}
+                      role="option"
+                      aria-selected={index === selectedIndex}
+                      onMouseMove={() => setSelectedIndex(index)}
+                      onClick={() => openNote(note.path)}
+                    >
+                      <span className="noteResultTitle">{note.title}</span>
+                      <span className="noteResultActions">
+                        <button
+                          aria-label={pinned ? 'Unpin note' : 'Pin note'}
+                          aria-pressed={pinned}
+                          className="noteResultAction noteResultAction-pin"
+                          type="button"
+                          onClick={event => {
+                            event.stopPropagation();
+                            togglePin(note.path);
+                          }}
+                        >
+                          <PinIcon filled={pinned} />
+                        </button>
+                        <button
+                          aria-label="Delete note"
+                          className="noteResultAction noteResultAction-delete"
+                          type="button"
+                          onClick={event => {
+                            event.stopPropagation();
+                            deleteNote(note.path);
+                          }}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </span>
+                    </div>
+                  );
+                })}
+                {filteredNotes.length === 0 ? <div className="emptyResults">No notes found</div> : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <div className="topbarActions">
+          <button
+            className="topbarButton"
+            type="button"
+            aria-label="New note"
+            title="New note (⌘N)"
+            onClick={createNewNote}
+          >
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
+          </button>
+        </div>
+      </header>
 
       {settingsOpen ? (
         <div className="settingsOverlay" role="dialog" aria-modal="true" aria-label="Settings">
@@ -2174,6 +2444,19 @@ function App() {
             </label>
 
             <div className="settingRow">
+              <strong>New note hotkey</strong>
+              <button
+                className={recordingHotkey ? 'hotkeyButton hotkeyButton-recording' : 'hotkeyButton'}
+                type="button"
+                aria-label="Change new note hotkey"
+                onClick={() => setRecordingHotkey(recording => !recording)}
+                onBlur={() => setRecordingHotkey(false)}
+              >
+                {recordingHotkey ? 'Press keys…' : formatHotkey(hotkey)}
+              </button>
+            </div>
+
+            <div className="settingRow">
               <strong>Launch at login</strong>
               <button
                 className={launchAtLogin ? 'switch switch-on' : 'switch'}
@@ -2189,89 +2472,6 @@ function App() {
             </div>
           </div>
         </div>
-      ) : null}
-
-      {searchOpen ? (
-        <section className="commandPanel">
-          <input
-            autoFocus
-            className="commandInput"
-            placeholder="Search notes…"
-            value={searchQuery}
-            onChange={event => setSearchQuery(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === 'ArrowDown') {
-                event.preventDefault();
-                setSelectedIndex(index => Math.min(index + 1, filteredNotes.length - 1));
-              } else if (event.key === 'ArrowUp') {
-                event.preventDefault();
-                setSelectedIndex(index => Math.max(index - 1, 0));
-              } else if (event.key === 'Enter') {
-                event.preventDefault();
-                const note = filteredNotes[selectedIndex];
-                if (note) {
-                  openNote(note.path);
-                }
-              }
-            }}
-          />
-          <div className="noteResults">
-            {filteredNotes.map((note, index) => {
-              const pinned = pinnedPaths.includes(note.path);
-              const classNames = ['noteResult'];
-              if (index === selectedIndex) {
-                classNames.push('noteResult-active');
-              }
-              if (pinned) {
-                classNames.push('noteResult-pinned');
-              }
-              return (
-                <div
-                  key={note.path}
-                  ref={element => {
-                    if (index === selectedIndex) {
-                      element?.scrollIntoView({ block: 'nearest' });
-                    }
-                  }}
-                  className={classNames.join(' ')}
-                  role="option"
-                  aria-selected={index === selectedIndex}
-                  onMouseMove={() => setSelectedIndex(index)}
-                  onClick={() => openNote(note.path)}
-                >
-                  <span className="noteResultTitle">{note.title}</span>
-                  {note.modifiedMs ? <span className="noteResultMeta">{formatRelativeTime(note.modifiedMs)}</span> : null}
-                  <span className="noteResultActions">
-                    <button
-                      aria-label={pinned ? 'Unpin note' : 'Pin note'}
-                      aria-pressed={pinned}
-                      className="noteResultAction noteResultAction-pin"
-                      type="button"
-                      onClick={event => {
-                        event.stopPropagation();
-                        togglePin(note.path);
-                      }}
-                    >
-                      <PinIcon filled={pinned} />
-                    </button>
-                    <button
-                      aria-label="Delete note"
-                      className="noteResultAction noteResultAction-delete"
-                      type="button"
-                      onClick={event => {
-                        event.stopPropagation();
-                        deleteNote(note.path);
-                      }}
-                    >
-                      <TrashIcon />
-                    </button>
-                  </span>
-                </div>
-              );
-            })}
-            {filteredNotes.length === 0 ? <div className="emptyResults">No notes found</div> : null}
-          </div>
-        </section>
       ) : null}
 
       <section className={settingsOpen ? 'editorShell editorShell-hidden' : 'editorShell'}>
