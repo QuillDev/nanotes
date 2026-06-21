@@ -123,7 +123,7 @@ const SAMPLE_NOTE = `# NaNotes
 
 Quick Markdown notes that stay in local files.
 
-- Press \`⌘⇧N\` to toggle the overlay
+- Press \`⌥N\` to toggle the overlay
 - Type Markdown in one pane
 - Markdown is styled while you edit
 
