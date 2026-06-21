@@ -1,6 +1,6 @@
 {
   "name": "nanotes",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "A Nako-styled floating Markdown scratchpad backed by local files.",
   "license": "MIT",
