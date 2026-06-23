@@ -1,6 +1,6 @@
 [package]
 name = "nanotes"
-version = "0.3.0"
+version = "0.3.1"
 description = "A Nako-styled floating Markdown scratchpad backed by local files."
 authors = ["QuillDev <siinspam@gmail.com>"]
 edition = "2021"

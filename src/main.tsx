@@ -640,32 +640,81 @@ function skipHiddenRight(state: EditorState, position: number): number {
   return target;
 }
 
-function visiblePositionsForLine(state: EditorState, lineNumber: number): number[] {
-  const line = state.doc.line(lineNumber);
-  const ranges = hiddenRangesForLine(state, lineNumber);
-  const positions: number[] = [];
-  for (let position = line.from; position <= line.to; position += 1) {
-    if (!ranges.some(range => position > range.from && position < range.to)) {
-      positions.push(position);
-    }
-  }
-  return positions;
-}
-
-function moveByVisibleWord(view: EditorView, direction: 'left' | 'right'): boolean {
-  const selection = view.state.selection.main;
-  if (!selection.empty) {
+function isVisibleWordChar(state: EditorState, position: number): boolean {
+  if (position < 0 || position >= state.doc.length) {
     return false;
   }
-  const line = view.state.doc.lineAt(selection.head);
-  const visiblePositions = visiblePositionsForLine(view.state, line.number);
-  const target = direction === 'left'
-    ? [...visiblePositions].reverse().find(position => position < selection.head && /\w/.test(view.state.sliceDoc(position, position + 1)))
-    : visiblePositions.find(position => position > selection.head && /\w/.test(view.state.sliceDoc(position - 1, position)));
+  if (hiddenRangesAtPosition(state, position).some(range => position >= range.from && position < range.to)) {
+    return false;
+  }
+  return /[\p{L}\p{N}_]/u.test(state.sliceDoc(position, position + 1));
+}
+
+function previousVisibleChar(state: EditorState, before: number): number | undefined {
+  for (let position = Math.min(before - 1, state.doc.length - 1); position >= 0; position -= 1) {
+    if (!hiddenRangesAtPosition(state, position).some(range => position >= range.from && position < range.to)) {
+      return position;
+    }
+  }
+  return undefined;
+}
+
+function nextVisibleChar(state: EditorState, from: number): number | undefined {
+  for (let position = Math.max(from, 0); position < state.doc.length; position += 1) {
+    if (!hiddenRangesAtPosition(state, position).some(range => position >= range.from && position < range.to)) {
+      return position;
+    }
+  }
+  return undefined;
+}
+
+function visibleWordBoundary(state: EditorState, position: number, direction: 'left' | 'right'): number | undefined {
+  if (direction === 'left') {
+    let char = previousVisibleChar(state, position);
+    while (char !== undefined && !isVisibleWordChar(state, char)) {
+      char = previousVisibleChar(state, char);
+    }
+    if (char === undefined) {
+      return undefined;
+    }
+    let start = char;
+    let prev = previousVisibleChar(state, start);
+    while (prev !== undefined && isVisibleWordChar(state, prev)) {
+      start = prev;
+      prev = previousVisibleChar(state, start);
+    }
+    return start;
+  }
+
+  let char = nextVisibleChar(state, position);
+  while (char !== undefined && !isVisibleWordChar(state, char)) {
+    char = nextVisibleChar(state, char + 1);
+  }
+  if (char === undefined) {
+    return undefined;
+  }
+  let end = char + 1;
+  let next = nextVisibleChar(state, end);
+  while (next !== undefined && isVisibleWordChar(state, next)) {
+    end = next + 1;
+    next = nextVisibleChar(state, end);
+  }
+  return end;
+}
+
+function moveByVisibleWord(view: EditorView, direction: 'left' | 'right', extend = false): boolean {
+  const selection = view.state.selection.main;
+  if (!selection.empty && !extend) {
+    return false;
+  }
+  const target = visibleWordBoundary(view.state, selection.head, direction);
   if (target === undefined) {
     return false;
   }
-  view.dispatch({ selection: { anchor: target }, scrollIntoView: true });
+  view.dispatch({
+    selection: extend ? { anchor: selection.anchor, head: target } : { anchor: target },
+    scrollIntoView: true,
+  });
   return true;
 }
 
@@ -941,8 +990,18 @@ const skipHiddenMarkdownKeymap = keymap.of([
       return true;
     },
   },
-  { key: 'Alt-ArrowLeft', run: view => moveByVisibleWord(view, 'left') },
-  { key: 'Alt-ArrowRight', run: view => moveByVisibleWord(view, 'right') },
+  {
+    key: 'Alt-ArrowLeft',
+    run: view => moveByVisibleWord(view, 'left'),
+    shift: view => moveByVisibleWord(view, 'left', true),
+    preventDefault: true,
+  },
+  {
+    key: 'Alt-ArrowRight',
+    run: view => moveByVisibleWord(view, 'right'),
+    shift: view => moveByVisibleWord(view, 'right', true),
+    preventDefault: true,
+  },
 ]);
 
 const FENCE_RE = /^(\s*)(`{3,}|~{3,})([^`~]*)$/;
