@@ -56,6 +56,7 @@ const DEFAULT_NOTE = 'Untitled.md';
 const SAVE_DELAY_MS = 500;
 const PINNED_KEY = 'nanotes:pinnedPaths';
 const HOTKEY_KEY = 'nanotes:hotkey';
+const IS_LINUX = /Linux/i.test(navigator.userAgent);
 // Matches the Rust DEFAULT_HOTKEY: Option/Alt + N. Stored in the plugin's
 // accelerator format ("alt+KeyN") so it round-trips straight to `set_hotkey`.
 const DEFAULT_HOTKEY = 'alt+KeyN';
@@ -92,12 +93,33 @@ function titleFromContent(content: string): string {
   return withoutHeading || 'Untitled';
 }
 
-// Render an accelerator like "alt+KeyN" as the macOS glyph string "⌥N".
+// Render an accelerator like "alt+KeyN" as platform-native UI text: "Alt+N" on
+// Linux and compact macOS glyphs like "⌥N" elsewhere.
 function formatHotkey(accelerator: string): string {
-  return accelerator
+  const parts = accelerator
     .split('+')
     .map(part => {
-      const symbol = HOTKEY_SYMBOLS[part.toLowerCase()];
+      const normalized = part.toLowerCase();
+      if (IS_LINUX) {
+        const linuxLabels: Record<string, string> = {
+          super: 'Super',
+          cmd: 'Super',
+          command: 'Super',
+          meta: 'Super',
+          commandorcontrol: 'Ctrl',
+          cmdorctrl: 'Ctrl',
+          control: 'Ctrl',
+          ctrl: 'Ctrl',
+          alt: 'Alt',
+          option: 'Alt',
+          shift: 'Shift',
+        };
+        const linuxLabel = linuxLabels[normalized];
+        if (linuxLabel) {
+          return linuxLabel;
+        }
+      }
+      const symbol = HOTKEY_SYMBOLS[normalized];
       if (symbol) {
         return symbol;
       }
@@ -110,24 +132,27 @@ function formatHotkey(accelerator: string): string {
         return digitMatch[1];
       }
       return part;
-    })
-    .join('');
+    });
+  return parts.join(IS_LINUX ? '+' : '');
+}
+function appShortcutLabel(key: string): string {
+  return `${IS_LINUX ? 'Alt+' : '⌘'}${key}`;
 }
 const FRAME_KEY = 'nanotes:windowFrame';
 const FRAME_SHAPE_KEY = 'nanotes:windowFrameShape';
 // Bumped to v2 to discard frames saved by the buggy build that opened the window
 // at half size (below the drag minimum) on HiDPI displays.
 const CURRENT_FRAME_SHAPE = 'portrait-notepad-v2';
-const IS_TAURI = '__TAURI_INTERNALS__' in window;
 const SAMPLE_NOTE = `# NaNotes
 
 Quick Markdown notes that stay in local files.
 
-- Press \`⌥N\` to toggle the overlay
+- Press \`${formatHotkey(DEFAULT_HOTKEY)}\` to toggle the overlay
 - Type Markdown in one pane
 - Markdown is styled while you edit
 
 > Browser preview mode uses sample content. The desktop app reads and writes the configured notes folder.`;
+const IS_TAURI = '__TAURI_INTERNALS__' in window;
 
 function storedNotePath() {
   const stored = window.localStorage.getItem('nanotes:notePath');
@@ -2253,7 +2278,9 @@ function App() {
 
   React.useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      const isCommand = event.metaKey && !event.ctrlKey && !event.altKey;
+      const isAppShortcut = IS_LINUX
+        ? event.altKey && !event.metaKey && !event.ctrlKey
+        : event.metaKey && !event.ctrlKey && !event.altKey;
 
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -2269,7 +2296,7 @@ function App() {
         return;
       }
 
-      if (!isCommand) {
+      if (!isAppShortcut) {
         return;
       }
 
@@ -2392,7 +2419,7 @@ function App() {
               className="islandBar"
               type="button"
               aria-label="Search notes"
-              title="Search notes (⌘P)"
+              title={`Search notes (${appShortcutLabel('P')})`}
               onClick={openSearch}
             >
               <svg className="topbarSearchIcon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2467,7 +2494,7 @@ function App() {
             className="topbarButton"
             type="button"
             aria-label="New note"
-            title="New note (⌘N)"
+            title={`New note (${appShortcutLabel('N')})`}
             onClick={createNewNote}
           >
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
