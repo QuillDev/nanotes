@@ -136,7 +136,7 @@ function formatHotkey(accelerator: string): string {
   return parts.join(IS_LINUX ? '+' : '');
 }
 function appShortcutLabel(key: string): string {
-  return `${IS_LINUX ? 'Alt+' : '⌘'}${key}`;
+  return `${IS_LINUX ? 'Ctrl+' : '⌘'}${key}`;
 }
 const FRAME_KEY = 'nanotes:windowFrame';
 const FRAME_SHAPE_KEY = 'nanotes:windowFrameShape';
@@ -2279,7 +2279,7 @@ function App() {
   React.useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const isAppShortcut = IS_LINUX
-        ? event.altKey && !event.metaKey && !event.ctrlKey
+        ? event.ctrlKey && !event.metaKey && !event.altKey
         : event.metaKey && !event.ctrlKey && !event.altKey;
 
       if (event.key === 'Escape') {
@@ -2320,8 +2320,8 @@ function App() {
         void hideOverlay();
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [createNewNote, openSearch, searchOpen, settingsOpen]);
 
   React.useEffect(() => {
