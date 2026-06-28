@@ -30,7 +30,7 @@
         "decorations": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "transparent": true,
+        "transparent": false,
         "shadow": true,
         "alwaysOnTop": true,
         "minimizable": false,
