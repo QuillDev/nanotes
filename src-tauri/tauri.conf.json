@@ -38,7 +38,7 @@
         "acceptFirstMouse": true,
         "dragDropEnabled": false,
         "skipTaskbar": true,
-        "visible": false,
+        "visible": true,
         "visibleOnAllWorkspaces": true,
         "resizable": true
       }

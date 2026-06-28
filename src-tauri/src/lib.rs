@@ -10,6 +10,7 @@ use nucleo_matcher::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WindowEvent};
+#[cfg(not(target_os = "linux"))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const DEFAULT_WINDOW_WIDTH: i32 = 560;
@@ -17,6 +18,7 @@ const DEFAULT_WINDOW_HEIGHT: i32 = 760;
 /// Default global hotkey that toggles the overlay (Option/Alt + N). The
 /// accelerator is parsed by the global-shortcut plugin; the frontend can
 /// override it at runtime via the `set_hotkey` command.
+#[cfg(not(target_os = "linux"))]
 const DEFAULT_HOTKEY: &str = "alt+KeyN";
 const MAX_SEARCH_RESULTS: usize = 10;
 const MAX_PATH_SUGGESTIONS: usize = 12;
@@ -360,6 +362,7 @@ fn show_overlay(app: &AppHandle) {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn toggle_overlay(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         match window.is_visible() {
@@ -398,6 +401,7 @@ fn configure_window(app: &AppHandle) {
 /// Register `accelerator` as the overlay toggle, replacing any shortcut that was
 /// previously registered. The accelerator uses the plugin's textual format, e.g.
 /// "alt+KeyN" or "super+shift+KeyN".
+#[cfg(not(target_os = "linux"))]
 fn apply_hotkey(app: &AppHandle, accelerator: &str) -> Result<(), String> {
     let shortcut: Shortcut = accelerator
         .parse()
@@ -418,20 +422,38 @@ fn apply_hotkey(app: &AppHandle, accelerator: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[cfg(not(target_os = "linux"))]
 fn set_hotkey(app: AppHandle, accelerator: String) -> Result<(), String> {
     apply_hotkey(&app, &accelerator)
+}
+
+#[tauri::command]
+#[cfg(target_os = "linux")]
+fn set_hotkey(_app: AppHandle, _accelerator: String) -> Result<(), String> {
+    Ok(())
 }
 
 /// Temporarily unregister the overlay shortcut so the webview can capture key
 /// presses (e.g. while the settings hotkey recorder is listening) instead of the
 /// OS swallowing the combo to toggle the window.
 #[tauri::command]
+#[cfg(not(target_os = "linux"))]
 fn clear_hotkey(app: AppHandle) {
     let _ = app.global_shortcut().unregister_all();
 }
 
+#[tauri::command]
+#[cfg(target_os = "linux")]
+fn clear_hotkey(_app: AppHandle) {}
+
+#[cfg(not(target_os = "linux"))]
 fn register_hotkey(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     apply_hotkey(app, DEFAULT_HOTKEY)?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn register_hotkey(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
@@ -474,15 +496,15 @@ pub fn run() {
                 }
             }
             configure_window(app.handle());
+            // Linux desktop environments, especially Wayland compositors, may not
+            // deliver process-registered global shortcuts consistently. On Linux,
+            // compositor keybinds should launch NaNotes and the app should show
+            // immediately instead of blocking startup while registering a shortcut.
+            #[cfg(target_os = "linux")]
+            show_overlay(app.handle());
             if let Err(error) = register_hotkey(app.handle()) {
                 eprintln!("failed to register NaNotes global hotkey: {error}");
             }
-            // Linux desktop environments, especially Wayland compositors, may not
-            // deliver process-registered global shortcuts consistently. macOS keeps
-            // the background-utility behavior, but Linux should show the overlay on
-            // launch so opening NaNotes from a launcher actually produces a window.
-            #[cfg(target_os = "linux")]
-            show_overlay(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
