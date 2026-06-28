@@ -6,7 +6,7 @@
 
 NaNotes is a Nako-styled floating Markdown scratchpad backed by a local notes folder. It's built for people who want a quick, always-a-hotkey-away notepad whose notes stay as plain `.md` files — one file per note, no proprietary database.
 
-Press <kbd>⌥</kbd>+<kbd>N</kbd> from any macOS app and a dark, pink-on-black overlay appears on top of whatever you're doing. Type Markdown, autosave to a local file, and dismiss it with <kbd>Escape</kbd>. It runs quietly in the background and stays out of the Dock and app switcher.
+Press <kbd>⌥</kbd>+<kbd>N</kbd> on macOS or <kbd>Alt</kbd>+<kbd>N</kbd> on Linux from any app and a dark, pink-on-black overlay appears on top of whatever you're doing. Type Markdown, autosave to a local file, and dismiss it with <kbd>Escape</kbd>. It runs quietly in the background and stays out of the Dock/app switcher or taskbar.
 
 <p align="center">
   <img src="assets/screenshot.png" alt="NaNotes overlay showing a Markdown note with a TypeScript code block and an inline image preview" width="520" />
@@ -26,12 +26,12 @@ Press <kbd>⌥</kbd>+<kbd>N</kbd> from any macOS app and a dark, pink-on-black o
 
 ## Requirements
 
-- macOS (Apple Silicon or Intel)
-- Xcode Command Line Tools — `xcode-select --install`
+- macOS (Apple Silicon or Intel) with Xcode Command Line Tools — `xcode-select --install`
+- NixOS / Linux with a desktop session that can run Tauri/WebKitGTK apps
 
 ## Install
 
-### Homebrew (recommended)
+### Homebrew (recommended on macOS)
 
 NaNotes is distributed as a build-from-source Homebrew formula, so the install compiles it locally (Homebrew pulls in the Rust and Node build tools for you).
 
@@ -50,6 +50,16 @@ To update later:
 ```bash
 brew upgrade nanotes
 ```
+
+### Nix / NixOS
+
+NaNotes ships a flake package for Linux:
+
+```bash
+nix run github:QuillDev/nanotes
+```
+
+For NixOS system flakes, add `github:QuillDev/nanotes` as an input and install `inputs.nanotes.packages.${pkgs.system}.default`.
 
 ### Build from source
 
