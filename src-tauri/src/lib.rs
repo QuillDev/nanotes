@@ -474,7 +474,15 @@ pub fn run() {
                 }
             }
             configure_window(app.handle());
-            register_hotkey(app.handle())?;
+            if let Err(error) = register_hotkey(app.handle()) {
+                eprintln!("failed to register NaNotes global hotkey: {error}");
+            }
+            // Linux desktop environments, especially Wayland compositors, may not
+            // deliver process-registered global shortcuts consistently. macOS keeps
+            // the background-utility behavior, but Linux should show the overlay on
+            // launch so opening NaNotes from a launcher actually produces a window.
+            #[cfg(target_os = "linux")]
+            show_overlay(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
