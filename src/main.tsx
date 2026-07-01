@@ -430,6 +430,16 @@ class CheckboxWidget extends WidgetType {
 // indent, list marker, `[`, status char, `]`, trailing space.
 const TASK_ITEM_RE = /^(\s*)([-*+])(\s+)\[([ xX])\](\s)/;
 
+function taskMarkerRangeForLine(line: { from: number; text: string }): HiddenRange | null {
+  const task = TASK_ITEM_RE.exec(line.text);
+  if (!task) {
+    return null;
+  }
+  const markerStart = line.from + task[1].length;
+  const statusPos = markerStart + task[2].length + task[3].length + 1;
+  return { from: markerStart, to: statusPos + 2 };
+}
+
 // A clickable link on a single line, with offsets relative to the line start.
 // `textFrom`/`textTo` bound the visible (clickable) portion; for a bare URL that
 // is the whole token, for `[text](url)` it is just the label between the
@@ -540,11 +550,10 @@ function buildHeadingDecorations(view: EditorView): DecorationSet {
       if (task) {
         // Replace `- [ ]` (marker through the closing bracket) with the box,
         // leaving the trailing space and item text in place.
-        const markerStart = line.from + task[1].length;
-        const statusPos = markerStart + task[2].length + task[3].length + 1;
-        const bracketEnd = statusPos + 2; // status char + `]`
+        const markerRange = taskMarkerRangeForLine(line)!;
+        const statusPos = markerRange.to - 2;
         const checked = task[4].toLowerCase() === 'x';
-        decorations.push(Decoration.replace({ widget: new CheckboxWidget(checked, statusPos) }).range(markerStart, bracketEnd));
+        decorations.push(Decoration.replace({ widget: new CheckboxWidget(checked, statusPos) }).range(markerRange.from, markerRange.to));
       } else {
         const bullet = /^(\s*)([-*+])(\s)/.exec(line.text);
         if (bullet) {
@@ -673,6 +682,11 @@ function hiddenRangesAtPosition(state: EditorState, position: number): HiddenRan
   return hiddenRangesForLine(state, line.number);
 }
 
+function taskMarkerRangeAtPosition(state: EditorState, position: number): HiddenRange | null {
+  const line = state.doc.lineAt(Math.min(position, state.doc.length));
+  return taskMarkerRangeForLine(line);
+}
+
 function visibleLineStart(state: EditorState, position: number): number {
   const line = state.doc.lineAt(position);
   const prefix = hiddenRangesForLine(state, line.number).find(range => range.from === line.from);
@@ -689,6 +703,10 @@ function skipHiddenLeft(state: EditorState, position: number): number {
   if (position <= 0) {
     return position;
   }
+  const taskMarker = taskMarkerRangeAtPosition(state, position);
+  if (taskMarker && position > taskMarker.from && position <= taskMarker.to) {
+    return taskMarker.from;
+  }
   let target = position - 1;
   const line = state.doc.lineAt(position);
   for (const range of hiddenRangesAtPosition(state, position)) {
@@ -704,6 +722,10 @@ function skipHiddenRight(state: EditorState, position: number): number {
   if (position >= state.doc.length) {
     return position;
   }
+  const taskMarker = taskMarkerRangeAtPosition(state, position);
+  if (taskMarker && position >= taskMarker.from && position < taskMarker.to) {
+    return taskMarker.to;
+  }
   let target = position + 1;
   for (const range of hiddenRangesAtPosition(state, position)) {
     if (target > range.from && target <= range.to) {
@@ -718,6 +740,10 @@ function isVisibleWordChar(state: EditorState, position: number): boolean {
   if (position < 0 || position >= state.doc.length) {
     return false;
   }
+  const taskMarker = taskMarkerRangeAtPosition(state, position);
+  if (taskMarker && position >= taskMarker.from && position < taskMarker.to) {
+    return false;
+  }
   if (hiddenRangesAtPosition(state, position).some(range => position >= range.from && position < range.to)) {
     return false;
   }
@@ -726,6 +752,10 @@ function isVisibleWordChar(state: EditorState, position: number): boolean {
 
 function previousVisibleChar(state: EditorState, before: number): number | undefined {
   for (let position = Math.min(before - 1, state.doc.length - 1); position >= 0; position -= 1) {
+    const taskMarker = taskMarkerRangeAtPosition(state, position);
+    if (taskMarker && position >= taskMarker.from && position < taskMarker.to) {
+      return taskMarker.from;
+    }
     if (!hiddenRangesAtPosition(state, position).some(range => position >= range.from && position < range.to)) {
       return position;
     }
@@ -735,6 +765,14 @@ function previousVisibleChar(state: EditorState, before: number): number | undef
 
 function nextVisibleChar(state: EditorState, from: number): number | undefined {
   for (let position = Math.max(from, 0); position < state.doc.length; position += 1) {
+    const taskMarker = taskMarkerRangeAtPosition(state, position);
+    if (taskMarker && position >= taskMarker.from && position < taskMarker.to) {
+      if (position === taskMarker.from) {
+        return taskMarker.from;
+      }
+      position = taskMarker.to - 1;
+      continue;
+    }
     if (!hiddenRangesAtPosition(state, position).some(range => position >= range.from && position < range.to)) {
       return position;
     }
@@ -788,6 +826,42 @@ function moveByVisibleWord(view: EditorView, direction: 'left' | 'right', extend
   view.dispatch({
     selection: extend ? { anchor: selection.anchor, head: target } : { anchor: target },
     scrollIntoView: true,
+  });
+  return true;
+}
+
+function deleteTaskMarkerBackward(view: EditorView): boolean {
+  const selection = view.state.selection.main;
+  if (!selection.empty) {
+    return false;
+  }
+  const taskMarker = taskMarkerRangeAtPosition(view.state, selection.head);
+  if (!taskMarker || selection.head <= taskMarker.from || selection.head > taskMarker.to) {
+    return false;
+  }
+  view.dispatch({
+    changes: { from: taskMarker.from, to: taskMarker.to },
+    selection: { anchor: taskMarker.from },
+    scrollIntoView: true,
+    userEvent: 'delete.backward',
+  });
+  return true;
+}
+
+function deleteTaskMarkerForward(view: EditorView): boolean {
+  const selection = view.state.selection.main;
+  if (!selection.empty) {
+    return false;
+  }
+  const taskMarker = taskMarkerRangeAtPosition(view.state, selection.head);
+  if (!taskMarker || selection.head < taskMarker.from || selection.head >= taskMarker.to) {
+    return false;
+  }
+  view.dispatch({
+    changes: { from: taskMarker.from, to: taskMarker.to },
+    selection: { anchor: taskMarker.from },
+    scrollIntoView: true,
+    userEvent: 'delete.forward',
   });
   return true;
 }
@@ -1028,6 +1102,14 @@ const modifierKeyClass = ViewPlugin.fromClass(
 );
 
 const skipHiddenMarkdownKeymap = keymap.of([
+  {
+    key: 'Backspace',
+    run: deleteTaskMarkerBackward,
+  },
+  {
+    key: 'Delete',
+    run: deleteTaskMarkerForward,
+  },
   {
     key: 'ArrowLeft',
     run: view => {
