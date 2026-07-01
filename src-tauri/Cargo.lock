@@ -2075,7 +2075,6 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
  "trash",
- "window-vibrancy",
 ]
 
 [[package]]

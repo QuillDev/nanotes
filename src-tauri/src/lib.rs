@@ -484,18 +484,6 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                if let Some(window) = app.get_webview_window("main") {
-                    use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
-                    // Keep the blur pinned to the Active state so focus changes don't
-                    // shift the window's translucency (the default follows key-window
-                    // state, which made the overlay flicker on focus/blur).
-                    let _ = apply_vibrancy(
-                        &window,
-                        NSVisualEffectMaterial::HudWindow,
-                        Some(NSVisualEffectState::Active),
-                        None,
-                    );
-                }
             }
             configure_window(app.handle());
             // Linux desktop environments, especially Wayland compositors, may not

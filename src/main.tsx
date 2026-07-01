@@ -57,9 +57,15 @@ const SAVE_DELAY_MS = 500;
 const PINNED_KEY = 'nanotes:pinnedPaths';
 const HOTKEY_KEY = 'nanotes:hotkey';
 const IS_LINUX = /Linux/i.test(navigator.userAgent);
+const GLASS_TINT_KEY = 'nanotes:glassTint';
+const GLASS_OPACITY_KEY = 'nanotes:glassOpacity';
+const GLASS_BLUR_KEY = 'nanotes:glassBlur';
 // Matches the Rust DEFAULT_HOTKEY: Option/Alt + N. Stored in the plugin's
 // accelerator format ("alt+KeyN") so it round-trips straight to `set_hotkey`.
 const DEFAULT_HOTKEY = 'alt+KeyN';
+const DEFAULT_GLASS_TINT = '#09090c';
+const DEFAULT_GLASS_OPACITY = 0.32;
+const DEFAULT_GLASS_BLUR = 0;
 const HOTKEY_MODIFIER_CODES = new Set([
   'ShiftLeft',
   'ShiftRight',
@@ -138,6 +144,49 @@ function formatHotkey(accelerator: string): string {
 function appShortcutLabel(key: string): string {
   return `${IS_LINUX ? 'Ctrl+' : '⌘'}${key}`;
 }
+
+function storedGlassTint(): string {
+  const stored = window.localStorage.getItem(GLASS_TINT_KEY)?.trim();
+  return stored && /^#[0-9a-fA-F]{6}$/.test(stored) ? stored : DEFAULT_GLASS_TINT;
+}
+
+function storedGlassOpacity(): number {
+  const raw = window.localStorage.getItem(GLASS_OPACITY_KEY);
+  if (!raw) {
+    return DEFAULT_GLASS_OPACITY;
+  }
+  const stored = Number(raw);
+  if (!Number.isFinite(stored)) {
+    return DEFAULT_GLASS_OPACITY;
+  }
+  return Math.min(0.96, Math.max(0.12, stored));
+}
+
+function storedGlassBlur(): number {
+  const raw = window.localStorage.getItem(GLASS_BLUR_KEY);
+  if (!raw) {
+    return DEFAULT_GLASS_BLUR;
+  }
+  const stored = Number(raw);
+  if (!Number.isFinite(stored)) {
+    return DEFAULT_GLASS_BLUR;
+  }
+  return Math.min(40, Math.max(0, stored));
+}
+
+function glassBackground(tint: string, opacity: number): string {
+  const hex = tint.replace('#', '');
+  const red = Number.parseInt(hex.slice(0, 2), 16);
+  const green = Number.parseInt(hex.slice(2, 4), 16);
+  const blue = Number.parseInt(hex.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
+}
+
+type ShellStyle = React.CSSProperties & {
+  '--glass-bg': string;
+  '--glass-blur': string;
+  '--glass-softness': string;
+};
 const FRAME_KEY = 'nanotes:windowFrame';
 const FRAME_SHAPE_KEY = 'nanotes:windowFrameShape';
 // Bumped to v2 to discard frames saved by the buggy build that opened the window
@@ -1889,6 +1938,10 @@ function App() {
   const [hotkey, setHotkey] = React.useState<string>(
     () => window.localStorage.getItem(HOTKEY_KEY)?.trim() || DEFAULT_HOTKEY,
   );
+  const [glassTint, setGlassTint] = React.useState(storedGlassTint);
+  const [glassOpacity, setGlassOpacity] = React.useState(storedGlassOpacity);
+  const [glassBlur, setGlassBlur] = React.useState(storedGlassBlur);
+  const [appearanceOpen, setAppearanceOpen] = React.useState(false);
   const [recordingHotkey, setRecordingHotkey] = React.useState(false);
   const [launchAtLogin, setLaunchAtLogin] = React.useState(false);
   const [launchAtLoginReady, setLaunchAtLoginReady] = React.useState(!IS_TAURI);
@@ -1921,6 +1974,11 @@ function App() {
   // commits on every blur, so this lets loadNote ignore commits that don't
   // actually change the folder (see loadNote).
   const loadedDirRef = React.useRef<string | null>(null);
+  const shellStyle: ShellStyle = {
+    '--glass-bg': glassBackground(glassTint, glassOpacity),
+    '--glass-blur': `${glassBlur}px`,
+    '--glass-softness': String(glassBlur / 40),
+  };
 
   // Persist the note currently in the editor if it has unsaved changes. The
   // debounced autosave is cancelled the instant we switch notes, so without this
@@ -2265,6 +2323,18 @@ function App() {
   }, []);
 
   React.useEffect(() => {
+    window.localStorage.setItem(GLASS_TINT_KEY, glassTint);
+  }, [glassTint]);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(GLASS_OPACITY_KEY, String(glassOpacity));
+  }, [glassOpacity]);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(GLASS_BLUR_KEY, String(glassBlur));
+  }, [glassBlur]);
+
+  React.useEffect(() => {
     if (!searchOpen || !IS_TAURI) {
       return;
     }
@@ -2378,7 +2448,7 @@ function App() {
   const { ref: islandRef, height: islandHeight } = useMorphHeight<HTMLDivElement>(searchOpen, [filteredNotes]);
 
   return (
-    <main className="shell">
+    <main className="shell" style={shellStyle}>
       <header className="topbar" data-tauri-drag-region>
         <div
           className={searchOpen ? 'morphSurface island island-open' : 'morphSurface island'}
@@ -2543,6 +2613,65 @@ function App() {
                 {recordingHotkey ? 'Press keys…' : formatHotkey(hotkey)}
               </button>
             </div>
+
+            <details
+              className="settingsFold"
+              open={appearanceOpen}
+              onToggle={event => setAppearanceOpen(event.currentTarget.open)}
+            >
+              <summary className="settingsFoldSummary">
+                <span>Appearance</span>
+              </summary>
+
+              <div className="settingsFoldBody">
+                <div className="settingRow settingRow-stacked">
+                  <div className="settingRowHeader">
+                    <strong>Glass tint</strong>
+                    <input
+                      className="colorInput"
+                      type="color"
+                      aria-label="Glass tint"
+                      value={glassTint}
+                      onChange={event => setGlassTint(event.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="settingRow settingRow-stacked">
+                  <div className="settingRowHeader">
+                    <strong>Glass opacity</strong>
+                    <span className="settingValue">{Math.round(glassOpacity * 100)}%</span>
+                  </div>
+                  <input
+                    className="rangeInput"
+                    type="range"
+                    min="0.12"
+                    max="0.96"
+                    step="0.01"
+                    aria-label="Glass opacity"
+                    value={glassOpacity}
+                    onChange={event => setGlassOpacity(Number(event.target.value))}
+                  />
+                </div>
+
+                <div className="settingRow settingRow-stacked">
+                  <div className="settingRowHeader">
+                    <strong>Glass blur</strong>
+                    <span className="settingValue">{glassBlur}px</span>
+                  </div>
+                  <input
+                    className="rangeInput"
+                    type="range"
+                    min="0"
+                    max="40"
+                    step="1"
+                    aria-label="Glass blur"
+                    value={glassBlur}
+                    onChange={event => setGlassBlur(Number(event.target.value))}
+                  />
+                </div>
+              </div>
+            </details>
 
             <div className="settingRow">
               <strong>Launch at login</strong>

@@ -110,12 +110,32 @@ input {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  /* The frosted-glass blur is supplied natively (window-vibrancy, HudWindow
-     material pinned to the Active state) so it stays constant on focus change.
-     This tint only darkens it; no CSS backdrop-filter, which followed key-window
-     state and made the transparency shift when the app was focused. */
+  /* Keep the shell self-contained. A native NSVisualEffectView can sit above the
+     WKWebView on some macOS/WebKit combinations, and CSS backdrop-filter
+     recomposites on focus changes in transparent Tauri windows. */
   background: var(--glass-bg);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+}
+
+.shell::before {
+  content: '';
+  position: absolute;
+  inset: calc(var(--glass-blur) * -0.35);
+  z-index: 0;
+  pointer-events: none;
+  opacity: var(--glass-softness);
+  background:
+    radial-gradient(circle at 28% 18%, rgba(255, 255, 255, 0.18), transparent 28%),
+    radial-gradient(circle at 78% 34%, rgba(246, 92, 142, 0.13), transparent 32%),
+    radial-gradient(circle at 52% 92%, rgba(130, 170, 255, 0.1), transparent 34%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.08), transparent 42%, rgba(255, 255, 255, 0.05));
+  filter: blur(calc(var(--glass-blur) * 0.65));
+  transform: translateZ(0);
+}
+
+.shell > * {
+  position: relative;
+  z-index: 1;
 }
 
 .topbar {
@@ -584,6 +604,121 @@ input:focus {
   color: var(--text);
   font-size: 13px;
   font-weight: 650;
+}
+
+.settingsFold {
+  min-width: 0;
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.settingsFoldSummary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.settingsFoldSummary::-webkit-details-marker {
+  display: none;
+}
+
+.settingsFoldSummary::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.18s ease, border-color 0.18s ease;
+}
+
+.settingsFoldSummary:hover::after {
+  border-color: var(--pink-bright);
+}
+
+.settingsFold[open] .settingsFoldSummary::after {
+  transform: rotate(45deg);
+}
+
+.settingsFoldBody {
+  display: grid;
+  gap: 0;
+}
+
+.settingsFold[open] .settingsFoldBody {
+  animation: settingsFoldOpen 0.18s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes settingsFoldOpen {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.settingsFoldBody .settingRow {
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.settingRow-stacked {
+  display: grid;
+  align-items: stretch;
+}
+
+.settingRowHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.settingValue {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.colorInput {
+  width: 34px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(9, 9, 12, 0.6);
+  cursor: pointer;
+}
+
+.colorInput::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.colorInput::-webkit-color-swatch {
+  border: 0;
+  border-radius: 5px;
+}
+
+.rangeInput {
+  width: 100%;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--pink);
 }
 
 /* Animated toggle: a pill track with a knob that slides across as the state
