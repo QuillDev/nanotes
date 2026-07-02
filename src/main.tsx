@@ -20,7 +20,6 @@ import { tags } from '@lezer/highlight';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { homeDir } from '@tauri-apps/api/path';
 import { openPath, openUrl } from '@tauri-apps/plugin-opener';
-import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
 import { morphClose, morphOpen, syncMorphHeight, useMorphHeight } from './morph';
@@ -46,6 +45,16 @@ interface NoteSaveResult {
   title: string;
 }
 
+interface AppConfig {
+  notesDir: string;
+  notePath: string;
+  hotkey: string;
+  pinnedPaths: string[];
+  glassTint: string;
+  glassOpacity: number;
+  glassBlur: number;
+}
+
 interface HiddenRange {
   from: number;
   to: number;
@@ -54,12 +63,7 @@ interface HiddenRange {
 const DEFAULT_NOTES_DIR = '~/.nanotes';
 const DEFAULT_NOTE = 'Untitled.md';
 const SAVE_DELAY_MS = 500;
-const PINNED_KEY = 'nanotes:pinnedPaths';
-const HOTKEY_KEY = 'nanotes:hotkey';
 const IS_LINUX = /Linux/i.test(navigator.userAgent);
-const GLASS_TINT_KEY = 'nanotes:glassTint';
-const GLASS_OPACITY_KEY = 'nanotes:glassOpacity';
-const GLASS_BLUR_KEY = 'nanotes:glassBlur';
 // Matches the Rust DEFAULT_HOTKEY: Option/Alt + N. Stored in the plugin's
 // accelerator format ("alt+KeyN") so it round-trips straight to `set_hotkey`.
 const DEFAULT_HOTKEY = 'alt+KeyN';
@@ -145,35 +149,6 @@ function appShortcutLabel(key: string): string {
   return `${IS_LINUX ? 'Ctrl+' : '⌘'}${key}`;
 }
 
-function storedGlassTint(): string {
-  const stored = window.localStorage.getItem(GLASS_TINT_KEY)?.trim();
-  return stored && /^#[0-9a-fA-F]{6}$/.test(stored) ? stored : DEFAULT_GLASS_TINT;
-}
-
-function storedGlassOpacity(): number {
-  const raw = window.localStorage.getItem(GLASS_OPACITY_KEY);
-  if (!raw) {
-    return DEFAULT_GLASS_OPACITY;
-  }
-  const stored = Number(raw);
-  if (!Number.isFinite(stored)) {
-    return DEFAULT_GLASS_OPACITY;
-  }
-  return Math.min(0.96, Math.max(0.12, stored));
-}
-
-function storedGlassBlur(): number {
-  const raw = window.localStorage.getItem(GLASS_BLUR_KEY);
-  if (!raw) {
-    return DEFAULT_GLASS_BLUR;
-  }
-  const stored = Number(raw);
-  if (!Number.isFinite(stored)) {
-    return DEFAULT_GLASS_BLUR;
-  }
-  return Math.min(40, Math.max(0, stored));
-}
-
 function glassBackground(tint: string, opacity: number): string {
   const hex = tint.replace('#', '');
   const red = Number.parseInt(hex.slice(0, 2), 16);
@@ -187,11 +162,6 @@ type ShellStyle = React.CSSProperties & {
   '--glass-blur': string;
   '--glass-softness': string;
 };
-const FRAME_KEY = 'nanotes:windowFrame';
-const FRAME_SHAPE_KEY = 'nanotes:windowFrameShape';
-// Bumped to v2 to discard frames saved by the buggy build that opened the window
-// at half size (below the drag minimum) on HiDPI displays.
-const CURRENT_FRAME_SHAPE = 'portrait-notepad-v2';
 const SAMPLE_NOTE = `# NaNotes
 
 Quick Markdown notes that stay in local files.
@@ -203,12 +173,64 @@ Quick Markdown notes that stay in local files.
 > Browser preview mode uses sample content. The desktop app reads and writes the configured notes folder.`;
 const IS_TAURI = '__TAURI_INTERNALS__' in window;
 
-function storedNotePath() {
-  const stored = window.localStorage.getItem('nanotes:notePath');
-  if (!stored || stored.includes('/')) {
-    return DEFAULT_NOTE;
+function defaultAppConfig(): AppConfig {
+  return {
+    notesDir: DEFAULT_NOTES_DIR,
+    notePath: DEFAULT_NOTE,
+    hotkey: DEFAULT_HOTKEY,
+    pinnedPaths: [],
+    glassTint: DEFAULT_GLASS_TINT,
+    glassOpacity: DEFAULT_GLASS_OPACITY,
+    glassBlur: DEFAULT_GLASS_BLUR,
+  };
+}
+
+function normalizeAppConfig(config: Partial<AppConfig> | null | undefined): AppConfig {
+  const defaults = defaultAppConfig();
+  const notesDir = config?.notesDir?.trim() || defaults.notesDir;
+  const notePath = config?.notePath?.trim();
+  const hotkey = config?.hotkey?.trim() || defaults.hotkey;
+  const glassTint = config?.glassTint?.trim();
+  const glassOpacity = Number(config?.glassOpacity);
+  const glassBlur = Number(config?.glassBlur);
+  return {
+    notesDir,
+    notePath: notePath && !notePath.includes('/') ? notePath : defaults.notePath,
+    hotkey,
+    pinnedPaths: Array.isArray(config?.pinnedPaths) ? config.pinnedPaths.filter(path => typeof path === 'string') : [],
+    glassTint: glassTint && /^#[0-9a-fA-F]{6}$/.test(glassTint) ? glassTint : defaults.glassTint,
+    glassOpacity: Number.isFinite(glassOpacity) ? Math.min(0.96, Math.max(0.12, glassOpacity)) : defaults.glassOpacity,
+    glassBlur: Number.isFinite(glassBlur) ? Math.min(40, Math.max(0, glassBlur)) : defaults.glassBlur,
+  };
+}
+
+function browserPreviewConfig(): AppConfig {
+  const pinnedRaw = window.localStorage.getItem('nanotes:browserPreviewPinnedPaths');
+  let pinnedPaths: string[] = [];
+  try {
+    pinnedPaths = pinnedRaw ? (JSON.parse(pinnedRaw) as string[]) : [];
+  } catch {
+    pinnedPaths = [];
   }
-  return stored;
+  return normalizeAppConfig({
+    notesDir: window.localStorage.getItem('nanotes:browserPreviewNotesDir') ?? undefined,
+    notePath: window.localStorage.getItem('nanotes:browserPreviewNotePath') ?? undefined,
+    hotkey: window.localStorage.getItem('nanotes:browserPreviewHotkey') ?? undefined,
+    pinnedPaths,
+    glassTint: window.localStorage.getItem('nanotes:browserPreviewGlassTint') ?? undefined,
+    glassOpacity: Number(window.localStorage.getItem('nanotes:browserPreviewGlassOpacity')),
+    glassBlur: Number(window.localStorage.getItem('nanotes:browserPreviewGlassBlur')),
+  });
+}
+
+function writeBrowserPreviewConfig(config: AppConfig) {
+  window.localStorage.setItem('nanotes:browserPreviewNotesDir', config.notesDir);
+  window.localStorage.setItem('nanotes:browserPreviewNotePath', config.notePath);
+  window.localStorage.setItem('nanotes:browserPreviewHotkey', config.hotkey);
+  window.localStorage.setItem('nanotes:browserPreviewPinnedPaths', JSON.stringify(config.pinnedPaths));
+  window.localStorage.setItem('nanotes:browserPreviewGlassTint', config.glassTint);
+  window.localStorage.setItem('nanotes:browserPreviewGlassOpacity', String(config.glassOpacity));
+  window.localStorage.setItem('nanotes:browserPreviewGlassBlur', String(config.glassBlur));
 }
 
 // Common fence languages are preloaded with their support already resolved so
@@ -1633,57 +1655,6 @@ const headingLineDecorations = ViewPlugin.fromClass(
   },
 );
 
-interface WindowFrame {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-async function saveWindowFrame() {
-  if (!IS_TAURI) {
-    return;
-  }
-  const current = getCurrentWindow();
-  const [position, size] = await Promise.all([current.outerPosition(), current.outerSize()]);
-  const frame: WindowFrame = {
-    x: position.x,
-    y: position.y,
-    width: size.width,
-    height: size.height,
-  };
-  window.localStorage.setItem(FRAME_KEY, JSON.stringify(frame));
-  window.localStorage.setItem(FRAME_SHAPE_KEY, CURRENT_FRAME_SHAPE);
-}
-
-async function restoreWindowFrame() {
-  if (!IS_TAURI) {
-    return;
-  }
-
-  if (window.localStorage.getItem(FRAME_SHAPE_KEY) !== CURRENT_FRAME_SHAPE) {
-    window.localStorage.removeItem(FRAME_KEY);
-    window.localStorage.setItem(FRAME_SHAPE_KEY, CURRENT_FRAME_SHAPE);
-    return;
-  }
-
-  const raw = window.localStorage.getItem(FRAME_KEY);
-  if (!raw) {
-    return;
-  }
-  let frame: WindowFrame;
-  try {
-    frame = JSON.parse(raw) as WindowFrame;
-  } catch {
-    // Corrupted/hand-edited value: drop it and fall back to the default frame.
-    window.localStorage.removeItem(FRAME_KEY);
-    return;
-  }
-  const current = getCurrentWindow();
-  await current.setSize(new PhysicalSize(frame.width, frame.height));
-  await current.setPosition(new PhysicalPosition(frame.x, frame.y));
-}
-
 // Shared filled glyphs used by both the React suggestion list and the
 // DOM-rendered CodeMirror completion popup, so files and directories look the
 // same wherever paths are completed. Solid silhouettes (the file keeps its cut
@@ -1760,7 +1731,6 @@ function TrashIcon() {
 }
 
 async function hideOverlay() {
-  await saveWindowFrame();
   if (IS_TAURI) {
     await getCurrentWindow().hide();
   }
@@ -1980,7 +1950,6 @@ function useDebouncedSave(
           if (noteGenRef.current !== gen) {
             return;
           }
-          window.localStorage.setItem('nanotes:notePath', result.path);
           setState(prev => ({
             ...prev,
             notePath: result.path,
@@ -2006,23 +1975,21 @@ function useDebouncedSave(
 }
 
 function App() {
+  const initialConfig = React.useMemo(() => (IS_TAURI ? defaultAppConfig() : browserPreviewConfig()), []);
   const [state, setState] = React.useState<NoteState>({
-    // `||` (not `??`) so a stored empty string falls back to the default rather
-    // than loading the folder field blank.
-    notesDir: window.localStorage.getItem('nanotes:notesDir')?.trim() || DEFAULT_NOTES_DIR,
-    notePath: storedNotePath(),
+    notesDir: initialConfig.notesDir,
+    notePath: initialConfig.notePath,
     content: '',
     savedContent: '',
     status: 'idle',
     message: 'Ready',
   });
   const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [hotkey, setHotkey] = React.useState<string>(
-    () => window.localStorage.getItem(HOTKEY_KEY)?.trim() || DEFAULT_HOTKEY,
-  );
-  const [glassTint, setGlassTint] = React.useState(storedGlassTint);
-  const [glassOpacity, setGlassOpacity] = React.useState(storedGlassOpacity);
-  const [glassBlur, setGlassBlur] = React.useState(storedGlassBlur);
+  const [hotkey, setHotkey] = React.useState<string>(initialConfig.hotkey);
+  const [acceptedHotkey, setAcceptedHotkey] = React.useState<string>(initialConfig.hotkey);
+  const [glassTint, setGlassTint] = React.useState(initialConfig.glassTint);
+  const [glassOpacity, setGlassOpacity] = React.useState(initialConfig.glassOpacity);
+  const [glassBlur, setGlassBlur] = React.useState(initialConfig.glassBlur);
   const [appearanceOpen, setAppearanceOpen] = React.useState(false);
   const [recordingHotkey, setRecordingHotkey] = React.useState(false);
   const [launchAtLogin, setLaunchAtLogin] = React.useState(false);
@@ -2031,14 +1998,9 @@ function App() {
   const [searchQuery, setSearchQuery] = React.useState('');
   const [notes, setNotes] = React.useState<NoteEntry[]>([]);
   const [selectedIndex, setSelectedIndex] = React.useState(0);
-  const [pinnedPaths, setPinnedPaths] = React.useState<string[]>(() => {
-    try {
-      const raw = window.localStorage.getItem(PINNED_KEY);
-      return raw ? (JSON.parse(raw) as string[]) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [pinnedPaths, setPinnedPaths] = React.useState<string[]>(initialConfig.pinnedPaths);
+  const [appConfigReady, setAppConfigReady] = React.useState(!IS_TAURI);
+  const acceptedHotkeyRef = React.useRef(initialConfig.hotkey);
 
   // The live CodeMirror view, so commands like "new note" can move focus back to
   // the editor immediately instead of leaving it on whatever was last focused.
@@ -2172,8 +2134,6 @@ function App() {
       notePath: state.notePath,
     })
       .then(content => {
-        window.localStorage.setItem('nanotes:notesDir', notesDir);
-        window.localStorage.setItem('nanotes:notePath', state.notePath);
         setState(prev => ({
           ...prev,
           content,
@@ -2213,7 +2173,6 @@ function App() {
       notePath,
     })
       .then(content => {
-        window.localStorage.setItem('nanotes:notePath', notePath);
         setState(prev => ({ ...prev, notePath, content, savedContent: content, status: 'saved', message: 'Saved' }));
         focusEditor();
       })
@@ -2240,7 +2199,6 @@ function App() {
     // unsaved new note; the file is created (with a unique name picked by
     // write_note) only once the user types and the autosave fires.
     setState(prev => ({ ...prev, notePath: '', content: '', savedContent: '', status: 'saved', message: 'New note' }));
-    window.localStorage.removeItem('nanotes:notePath');
 
     if (!IS_TAURI) {
       window.localStorage.setItem('nanotes:browserPreviewContent', '');
@@ -2261,17 +2219,13 @@ function App() {
 
   const togglePin = React.useCallback((notePath: string) => {
     setPinnedPaths(prev => {
-      const next = prev.includes(notePath) ? prev.filter(path => path !== notePath) : [...prev, notePath];
-      window.localStorage.setItem(PINNED_KEY, JSON.stringify(next));
-      return next;
+      return prev.includes(notePath) ? prev.filter(path => path !== notePath) : [...prev, notePath];
     });
   }, []);
 
   const deleteNote = React.useCallback((notePath: string) => {
     setPinnedPaths(prev => {
-      const next = prev.filter(path => path !== notePath);
-      window.localStorage.setItem(PINNED_KEY, JSON.stringify(next));
-      return next;
+      return prev.filter(path => path !== notePath);
     });
 
     if (!IS_TAURI) {
@@ -2305,28 +2259,27 @@ function App() {
       });
   }, [launchAtLogin, launchAtLoginReady]);
 
-  // Persist the chosen hotkey and (re)register it with the backend whenever it
-  // changes. This also runs once on mount to apply the stored override over the
-  // backend's compiled-in default. The very first run is silent so it doesn't
-  // clobber the initial "Ready" status; later changes report success/failure.
+  // Register the chosen hotkey with the backend whenever it changes. Native
+  // persistence is handled by the app-config effect below.
   const hotkeyAppliedRef = React.useRef(false);
   React.useEffect(() => {
     if (!IS_TAURI) {
-      window.localStorage.setItem(HOTKEY_KEY, hotkey);
+      acceptedHotkeyRef.current = hotkey;
+      setAcceptedHotkey(hotkey);
       return;
     }
     const isInitial = !hotkeyAppliedRef.current;
     hotkeyAppliedRef.current = true;
     void invoke('set_hotkey', { accelerator: hotkey })
       .then(() => {
-        // Only persist once the backend has accepted the combo, so a rejected
-        // accelerator never becomes the value reloaded (broken) on next launch.
-        window.localStorage.setItem(HOTKEY_KEY, hotkey);
+        acceptedHotkeyRef.current = hotkey;
+        setAcceptedHotkey(hotkey);
         if (!isInitial) {
           setState(prev => ({ ...prev, status: 'saved', message: `Hotkey set to ${formatHotkey(hotkey)}` }));
         }
       })
       .catch((error: unknown) => {
+        setHotkey(acceptedHotkeyRef.current);
         setState(prev => ({ ...prev, status: 'error', message: `Hotkey: ${String(error)}` }));
       });
   }, [hotkey]);
@@ -2382,12 +2335,73 @@ function App() {
     };
   }, [recordingHotkey]);
 
-  // Load the initial note once on mount. Subsequent folder/note changes are
-  // driven explicitly by loadNote/openNote/createNewNote, so loadNote is
-  // deliberately omitted from the dependency list.
   React.useEffect(() => {
-    loadNote();
+    if (!IS_TAURI) {
+      return;
+    }
+
+    let cancelled = false;
+    void invoke<AppConfig>('read_app_config')
+      .then(config => {
+        if (cancelled) {
+          return;
+        }
+        const next = normalizeAppConfig(config);
+        setState(prev => ({ ...prev, notesDir: next.notesDir, notePath: next.notePath }));
+        setHotkey(next.hotkey);
+        acceptedHotkeyRef.current = next.hotkey;
+        setAcceptedHotkey(next.hotkey);
+        setPinnedPaths(next.pinnedPaths);
+        setGlassTint(next.glassTint);
+        setGlassOpacity(next.glassOpacity);
+        setGlassBlur(next.glassBlur);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setState(prev => ({ ...prev, status: 'error', message: `Settings: ${String(error)}` }));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAppConfigReady(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  React.useEffect(() => {
+    if (!appConfigReady) {
+      return;
+    }
+    const config = normalizeAppConfig({
+      notesDir: state.notesDir,
+      notePath: state.notePath || DEFAULT_NOTE,
+      hotkey: acceptedHotkey,
+      pinnedPaths,
+      glassTint,
+      glassOpacity,
+      glassBlur,
+    });
+    if (!IS_TAURI) {
+      writeBrowserPreviewConfig(config);
+      return;
+    }
+    void invoke('write_app_config', { config }).catch((error: unknown) => {
+      setState(prev => ({ ...prev, status: 'error', message: `Settings: ${String(error)}` }));
+    });
+  }, [acceptedHotkey, appConfigReady, glassBlur, glassOpacity, glassTint, pinnedPaths, state.notePath, state.notesDir]);
+
+  // Load the initial note once settings have loaded. Subsequent folder/note
+  // changes are driven explicitly by loadNote/openNote/createNewNote.
+  React.useEffect(() => {
+    if (!appConfigReady) {
+      return;
+    }
+    loadNote();
+  }, [appConfigReady]);
 
   React.useEffect(() => {
     if (!IS_TAURI) {
@@ -2403,18 +2417,6 @@ function App() {
         setLaunchAtLoginReady(true);
       });
   }, []);
-
-  React.useEffect(() => {
-    window.localStorage.setItem(GLASS_TINT_KEY, glassTint);
-  }, [glassTint]);
-
-  React.useEffect(() => {
-    window.localStorage.setItem(GLASS_OPACITY_KEY, String(glassOpacity));
-  }, [glassOpacity]);
-
-  React.useEffect(() => {
-    window.localStorage.setItem(GLASS_BLUR_KEY, String(glassBlur));
-  }, [glassBlur]);
 
   React.useEffect(() => {
     if (!searchOpen || !IS_TAURI) {
@@ -2475,40 +2477,6 @@ function App() {
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, [createNewNote, openSearch, searchOpen, settingsOpen]);
-
-  React.useEffect(() => {
-    let timer: number | undefined;
-    let disposed = false;
-    let cleanup: Array<() => void> = [];
-    if (!IS_TAURI) {
-      return;
-    }
-    const current = getCurrentWindow();
-    const queueSave = () => {
-      if (timer) {
-        window.clearTimeout(timer);
-      }
-      timer = window.setTimeout(() => void saveWindowFrame(), 250);
-    };
-
-    void restoreWindowFrame();
-    void Promise.all([current.listen('tauri://move', queueSave), current.listen('tauri://resize', queueSave)]).then(
-      unlisteners => {
-        cleanup = unlisteners;
-        if (disposed) {
-          unlisteners.forEach(unlisten => unlisten());
-        }
-      },
-    );
-
-    return () => {
-      disposed = true;
-      if (timer) {
-        window.clearTimeout(timer);
-      }
-      cleanup.forEach(unlisten => unlisten());
-    };
-  }, []);
 
   useDebouncedSave(state, setState, noteGenRef);
 

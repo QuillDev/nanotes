@@ -9,16 +9,20 @@ use nucleo_matcher::{
     Config, Matcher,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WindowEvent};
+use tauri::{
+    AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
+    WebviewWindow, Window, WindowEvent,
+};
 #[cfg(not(target_os = "linux"))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const DEFAULT_WINDOW_WIDTH: i32 = 560;
 const DEFAULT_WINDOW_HEIGHT: i32 = 760;
+const APP_CONFIG_FILE: &str = "settings.json";
+const WINDOW_FRAME_FILE: &str = "window-frame.json";
 /// Default global hotkey that toggles the overlay (Option/Alt + N). The
 /// accelerator is parsed by the global-shortcut plugin; the frontend can
 /// override it at runtime via the `set_hotkey` command.
-#[cfg(not(target_os = "linux"))]
 const DEFAULT_HOTKEY: &str = "alt+KeyN";
 const MAX_SEARCH_RESULTS: usize = 10;
 const MAX_PATH_SUGGESTIONS: usize = 12;
@@ -29,6 +33,40 @@ struct NoteEntry {
     title: String,
     #[serde(rename = "modifiedMs")]
     modified_ms: u64,
+}
+
+#[derive(Deserialize, Serialize, Clone, Copy)]
+struct WindowFrame {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AppConfig {
+    notes_dir: String,
+    note_path: String,
+    hotkey: String,
+    pinned_paths: Vec<String>,
+    glass_tint: String,
+    glass_opacity: f64,
+    glass_blur: f64,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            notes_dir: "~/.nanotes".to_string(),
+            note_path: "Untitled.md".to_string(),
+            hotkey: DEFAULT_HOTKEY.to_string(),
+            pinned_paths: Vec::new(),
+            glass_tint: "#09090c".to_string(),
+            glass_opacity: 0.32,
+            glass_blur: 0.0,
+        }
+    }
 }
 
 /// Which directory entries `suggest_paths` should return.
@@ -294,10 +332,7 @@ fn list_notes(notes_dir: String, query: String) -> Result<Vec<NoteEntry>, String
 }
 
 #[tauri::command]
-fn suggest_paths(
-    input: String,
-    filter: Option<PathFilter>,
-) -> Result<Vec<PathSuggestion>, String> {
+fn suggest_paths(input: String, filter: Option<PathFilter>) -> Result<Vec<PathSuggestion>, String> {
     // Only offer completions once the input clearly looks like a filesystem
     // path. Anything else (a bare folder name, empty string) is left alone.
     let looks_like_path = input.starts_with('/')
@@ -354,9 +389,149 @@ fn suggest_paths(
     Ok(suggestions)
 }
 
+fn window_frame_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())
+        .map(|dir| dir.join(WINDOW_FRAME_FILE))
+}
+
+fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())
+        .map(|dir| dir.join(APP_CONFIG_FILE))
+}
+
+fn normalize_app_config(mut config: AppConfig) -> AppConfig {
+    if config.notes_dir.trim().is_empty() {
+        config.notes_dir = "~/.nanotes".to_string();
+    }
+    if config.note_path.trim().is_empty() || config.note_path.contains('/') {
+        config.note_path = "Untitled.md".to_string();
+    }
+    if config.hotkey.trim().is_empty() {
+        config.hotkey = DEFAULT_HOTKEY.to_string();
+    }
+    if !config.glass_tint.starts_with('#') || config.glass_tint.len() != 7 {
+        config.glass_tint = "#09090c".to_string();
+    }
+    if !config.glass_opacity.is_finite() {
+        config.glass_opacity = 0.32;
+    }
+    config.glass_opacity = config.glass_opacity.clamp(0.12, 0.96);
+    if !config.glass_blur.is_finite() {
+        config.glass_blur = 0.0;
+    }
+    config.glass_blur = config.glass_blur.clamp(0.0, 40.0);
+    config
+}
+
+fn write_app_config_file(app: &AppHandle, config: AppConfig) -> Result<(), String> {
+    let path = app_config_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let contents = serde_json::to_string_pretty(&normalize_app_config(config))
+        .map_err(|error| error.to_string())?;
+    fs::write(path, contents).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn read_app_config(app: AppHandle) -> AppConfig {
+    let Some(path) = app_config_path(&app).ok() else {
+        return AppConfig::default();
+    };
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<AppConfig>(&raw).ok())
+        .map(normalize_app_config)
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn write_app_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
+    write_app_config_file(&app, config)
+}
+
+fn is_plausible_frame(frame: WindowFrame) -> bool {
+    frame.width >= 300 && frame.height >= 300
+}
+
+fn frame_is_on_screen(window: &WebviewWindow, frame: WindowFrame) -> bool {
+    let left = frame.x;
+    let top = frame.y;
+    let right = left.saturating_add(frame.width as i32);
+    let bottom = top.saturating_add(frame.height as i32);
+
+    window
+        .available_monitors()
+        .map(|monitors| {
+            monitors.into_iter().any(|monitor| {
+                let work_area = monitor.work_area();
+                let monitor_left = work_area.position.x;
+                let monitor_top = work_area.position.y;
+                let monitor_right = monitor_left.saturating_add(work_area.size.width as i32);
+                let monitor_bottom = monitor_top.saturating_add(work_area.size.height as i32);
+
+                right > monitor_left
+                    && left < monitor_right
+                    && bottom > monitor_top
+                    && top < monitor_bottom
+            })
+        })
+        .unwrap_or(true)
+}
+
+fn read_saved_window_frame(window: &WebviewWindow) -> Option<WindowFrame> {
+    let path = window_frame_path(window.app_handle()).ok()?;
+    let raw = fs::read_to_string(path).ok()?;
+    let frame = serde_json::from_str::<WindowFrame>(&raw).ok()?;
+    if is_plausible_frame(frame) && frame_is_on_screen(window, frame) {
+        Some(frame)
+    } else {
+        None
+    }
+}
+
+fn apply_window_frame(window: &WebviewWindow, frame: WindowFrame) {
+    let _ = window.set_size(PhysicalSize::new(frame.width, frame.height));
+    let _ = window.set_position(PhysicalPosition::new(frame.x, frame.y));
+}
+
+fn save_window_frame(window: &Window) {
+    if window.label() != "main" {
+        return;
+    }
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        return;
+    };
+    let frame = WindowFrame {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    };
+    if !is_plausible_frame(frame) {
+        return;
+    }
+    let Ok(path) = window_frame_path(window.app_handle()) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(contents) = serde_json::to_string_pretty(&frame) {
+        let _ = fs::write(path, contents);
+    }
+}
+
 fn show_overlay(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(true);
+        if let Some(frame) = read_saved_window_frame(&window) {
+            apply_window_frame(&window, frame);
+        }
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -383,6 +558,10 @@ fn hide_overlay(app: &AppHandle) {
 fn configure_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(true);
+        if let Some(frame) = read_saved_window_frame(&window) {
+            apply_window_frame(&window, frame);
+            return;
+        }
         // Size in *logical* points so it matches tauri.conf (and the drag minimum,
         // which is logical). Using PhysicalSize here made the window open at half
         // size on a 2x display — below the minimum the user could drag to.
@@ -471,14 +650,19 @@ pub fn run() {
             list_notes,
             delete_note,
             suggest_paths,
+            read_app_config,
+            write_app_config,
             set_hotkey,
             clear_hotkey
         ])
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) => save_window_frame(window),
+            WindowEvent::CloseRequested { api, .. } => {
+                save_window_frame(window);
                 api.prevent_close();
                 let _ = window.hide();
             }
+            _ => {}
         })
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -545,7 +729,11 @@ mod tests {
     fn write_note_with_empty_path_does_not_clobber_existing_untitled() {
         let notes_dir = temp_notes_dir("new-note");
         // A real note already lives at Untitled.md.
-        fs::write(Path::new(&notes_dir).join("Untitled.md"), "# Untitled\n\nkeep me").unwrap();
+        fs::write(
+            Path::new(&notes_dir).join("Untitled.md"),
+            "# Untitled\n\nkeep me",
+        )
+        .unwrap();
 
         // Saving a brand-new note (empty current path) must reserve a fresh name
         // rather than overwrite the existing Untitled.md.
@@ -571,10 +759,13 @@ mod tests {
         let base = format!("{dir}/al");
         let results = suggest_paths(base.clone(), None).unwrap();
         let values: Vec<_> = results.iter().map(|s| s.value.as_str()).collect();
-        assert_eq!(values, vec![
-            format!("{dir}/Alpha/").as_str(),
-            format!("{dir}/alpha-note.md").as_str(),
-        ]);
+        assert_eq!(
+            values,
+            vec![
+                format!("{dir}/Alpha/").as_str(),
+                format!("{dir}/alpha-note.md").as_str(),
+            ]
+        );
         assert!(results[0].is_dir);
         assert!(!results[1].is_dir);
 
@@ -591,7 +782,9 @@ mod tests {
 
     #[test]
     fn suggest_paths_ignores_non_path_input() {
-        assert!(suggest_paths("just a note".to_string(), None).unwrap().is_empty());
+        assert!(suggest_paths("just a note".to_string(), None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
