@@ -10,8 +10,8 @@ use nucleo_matcher::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
-    WebviewWindow, Window, WindowEvent,
+    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, Window,
+    WindowEvent,
 };
 #[cfg(not(target_os = "linux"))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -458,26 +458,42 @@ fn is_plausible_frame(frame: WindowFrame) -> bool {
     frame.width >= 300 && frame.height >= 300
 }
 
-fn frame_is_on_screen(window: &WebviewWindow, frame: WindowFrame) -> bool {
-    let left = frame.x;
-    let top = frame.y;
-    let right = left.saturating_add(frame.width as i32);
-    let bottom = top.saturating_add(frame.height as i32);
+fn frame_has_usable_intersection(
+    frame: WindowFrame,
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_width: u32,
+    monitor_height: u32,
+) -> bool {
+    const MIN_VISIBLE_LENGTH: i64 = 80;
 
+    let left = i64::from(frame.x);
+    let top = i64::from(frame.y);
+    let right = left + i64::from(frame.width);
+    let bottom = top + i64::from(frame.height);
+    let monitor_left = i64::from(monitor_x);
+    let monitor_top = i64::from(monitor_y);
+    let monitor_right = monitor_left + i64::from(monitor_width);
+    let monitor_bottom = monitor_top + i64::from(monitor_height);
+    let visible_width = right.min(monitor_right) - left.max(monitor_left);
+    let visible_height = bottom.min(monitor_bottom) - top.max(monitor_top);
+
+    visible_width >= MIN_VISIBLE_LENGTH && visible_height >= MIN_VISIBLE_LENGTH
+}
+
+fn frame_is_on_screen(window: &WebviewWindow, frame: WindowFrame) -> bool {
     window
         .available_monitors()
         .map(|monitors| {
             monitors.into_iter().any(|monitor| {
                 let work_area = monitor.work_area();
-                let monitor_left = work_area.position.x;
-                let monitor_top = work_area.position.y;
-                let monitor_right = monitor_left.saturating_add(work_area.size.width as i32);
-                let monitor_bottom = monitor_top.saturating_add(work_area.size.height as i32);
-
-                right > monitor_left
-                    && left < monitor_right
-                    && bottom > monitor_top
-                    && top < monitor_bottom
+                frame_has_usable_intersection(
+                    frame,
+                    work_area.position.x,
+                    work_area.position.y,
+                    work_area.size.width,
+                    work_area.size.height,
+                )
             })
         })
         .unwrap_or(true)
@@ -494,9 +510,13 @@ fn read_saved_window_frame(window: &WebviewWindow) -> Option<WindowFrame> {
     }
 }
 
-fn apply_window_frame(window: &WebviewWindow, frame: WindowFrame) {
-    let _ = window.set_size(PhysicalSize::new(frame.width, frame.height));
-    let _ = window.set_position(PhysicalPosition::new(frame.x, frame.y));
+fn apply_window_frame(window: &WebviewWindow, frame: WindowFrame) -> Result<(), String> {
+    window
+        .set_size(PhysicalSize::new(frame.width, frame.height))
+        .map_err(|error| format!("failed to restore NaNotes window size: {error}"))?;
+    window
+        .set_position(PhysicalPosition::new(frame.x, frame.y))
+        .map_err(|error| format!("failed to restore NaNotes window position: {error}"))
 }
 
 fn save_window_frame(window: &Window) {
@@ -527,13 +547,15 @@ fn save_window_frame(window: &Window) {
 }
 
 fn show_overlay(app: &AppHandle) {
+    configure_window(app);
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_always_on_top(true);
-        if let Some(frame) = read_saved_window_frame(&window) {
-            apply_window_frame(&window, frame);
+        if let Err(error) = window.show() {
+            eprintln!("failed to show NaNotes window: {error}");
+            return;
         }
-        let _ = window.show();
-        let _ = window.set_focus();
+        if let Err(error) = window.set_focus() {
+            eprintln!("failed to focus NaNotes window: {error}");
+        }
     }
 }
 
@@ -557,22 +579,27 @@ fn hide_overlay(app: &AppHandle) {
 
 fn configure_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_always_on_top(true);
-        if let Some(frame) = read_saved_window_frame(&window) {
-            apply_window_frame(&window, frame);
-            return;
+        if let Err(error) = window.set_always_on_top(true) {
+            eprintln!("failed to keep NaNotes window on top: {error}");
         }
-        // Size in *logical* points so it matches tauri.conf (and the drag minimum,
-        // which is logical). Using PhysicalSize here made the window open at half
-        // size on a 2x display — below the minimum the user could drag to.
-        let width = f64::from(DEFAULT_WINDOW_WIDTH);
-        let height = f64::from(DEFAULT_WINDOW_HEIGHT);
-        let _ = window.set_size(LogicalSize::new(width, height));
-        if let Some(monitor) = window.current_monitor().ok().flatten() {
-            let monitor_size = monitor.size().to_logical::<f64>(monitor.scale_factor());
-            let x = ((monitor_size.width - width) / 2.0).max(40.0);
-            let y = ((monitor_size.height - height) / 2.0).max(40.0);
-            let _ = window.set_position(LogicalPosition::new(x, y));
+        if let Some(frame) = read_saved_window_frame(&window) {
+            if let Err(error) = apply_window_frame(&window, frame) {
+                eprintln!("{error}");
+            } else {
+                return;
+            }
+        }
+        // Use logical points for the configured size, then let Tauri center the
+        // window on the current display. This avoids assuming the main display's
+        // origin when monitor arrangements change.
+        if let Err(error) = window.set_size(LogicalSize::new(
+            f64::from(DEFAULT_WINDOW_WIDTH),
+            f64::from(DEFAULT_WINDOW_HEIGHT),
+        )) {
+            eprintln!("failed to set default NaNotes window size: {error}");
+        }
+        if let Err(error) = window.center() {
+            eprintln!("failed to center NaNotes window: {error}");
         }
     }
 }
@@ -669,13 +696,13 @@ pub fn run() {
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
-            configure_window(app.handle());
-            // Linux desktop environments, especially Wayland compositors, may not
-            // deliver process-registered global shortcuts consistently. On Linux,
-            // compositor keybinds should launch NaNotes and the app should show
-            // immediately instead of blocking startup while registering a shortcut.
-            #[cfg(target_os = "linux")]
+            // Do not rely on the window config's initial visibility. Accessory apps
+            // have no Dock icon to recover from a failed or suppressed presentation.
+            // Linux compositors likewise may not deliver process-global shortcuts.
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             show_overlay(app.handle());
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            configure_window(app.handle());
             if let Err(error) = register_hotkey(app.handle()) {
                 eprintln!("failed to register NaNotes global hotkey: {error}");
             }
@@ -683,11 +710,14 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building NaNotes")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { api, .. } => {
                 api.prevent_exit();
                 hide_overlay(app_handle);
             }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => show_overlay(app_handle),
+            _ => {}
         });
 }
 
@@ -700,6 +730,68 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn window_frame_requires_a_usable_size() {
+        assert!(is_plausible_frame(WindowFrame {
+            x: 0,
+            y: 0,
+            width: 560,
+            height: 760,
+        }));
+        assert!(!is_plausible_frame(WindowFrame {
+            x: 0,
+            y: 0,
+            width: 299,
+            height: 760,
+        }));
+    }
+
+    #[test]
+    fn window_frame_requires_a_usable_on_screen_area() {
+        let monitor = (0, 0, 3024, 1898);
+        assert!(frame_has_usable_intersection(
+            WindowFrame {
+                x: 2086,
+                y: 696,
+                width: 760,
+                height: 960,
+            },
+            monitor.0,
+            monitor.1,
+            monitor.2,
+            monitor.3,
+        ));
+        assert!(!frame_has_usable_intersection(
+            WindowFrame {
+                x: 2945,
+                y: 100,
+                width: 760,
+                height: 960,
+            },
+            monitor.0,
+            monitor.1,
+            monitor.2,
+            monitor.3,
+        ));
+        assert!(!frame_has_usable_intersection(
+            WindowFrame {
+                x: 4000,
+                y: 100,
+                width: 760,
+                height: 960,
+            },
+            monitor.0,
+            monitor.1,
+            monitor.2,
+            monitor.3,
+        ));
+    }
+
+    #[test]
+    fn malformed_window_frame_is_rejected() {
+        assert!(serde_json::from_str::<WindowFrame>(r#"{"x":0,"y":0,"width":"wide"}"#).is_err());
     }
 
     #[test]
