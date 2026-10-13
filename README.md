@@ -102,6 +102,8 @@ Verify a change before committing:
 
 ```bash
 bun run check                                    # type-check + build the UI
+bunx playwright install chromium webkit           # browser-test prerequisites
+bun run test:editor                               # ghost-text/editing regressions
 cargo check --manifest-path src-tauri/Cargo.toml # check the Rust shell
 cargo test  --manifest-path src-tauri/Cargo.toml # run the Rust tests
 ```

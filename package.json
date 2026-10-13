@@ -1,6 +1,6 @@
 {
   "name": "nanotes",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "A Nako-styled floating Markdown scratchpad backed by local files.",
   "license": "MIT",
@@ -15,7 +15,8 @@
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "tauri:build": "tauri build",
-    "check": "tsc && vite build"
+    "check": "tsc && vite build",
+    "test:editor": "node scripts/test-editor.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -29,8 +30,8 @@
     "@codemirror/lang-rust": "^6.0.2",
     "@codemirror/language": "^6.12.3",
     "@codemirror/language-data": "^6.5.2",
-    "@codemirror/state": "^6.6.0",
-    "@codemirror/view": "^6.43.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.14",
     "@lezer/highlight": "^1.2.3",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-autostart": "~2",
@@ -45,6 +46,7 @@
     "@tauri-apps/cli": "^2.9.0",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "playwright": "^1.64.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.6"
   }
