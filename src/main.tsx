@@ -56,6 +56,31 @@ interface AppConfig {
   glassTint: string;
   glassOpacity: number;
   glassBlur: number;
+  syncUrl: string;
+  syncToken: string;
+}
+
+interface PairingStartResult {
+  code: string;
+  pollToken: string;
+  verificationUrl: string;
+  expiresAt: number;
+}
+
+interface PairingPollResult {
+  status: 'pending' | 'approved' | 'expired';
+  token?: string | null;
+  deviceName?: string | null;
+}
+
+interface SyncResult {
+  pulled: number;
+  pushed: number;
+  conflicts: number;
+  rev: number;
+  pinnedPaths: string[];
+  activeNotePath?: string | null;
+  activeNoteChanged: boolean;
 }
 
 interface HiddenRange {
@@ -187,6 +212,8 @@ function defaultAppConfig(): AppConfig {
     glassTint: DEFAULT_GLASS_TINT,
     glassOpacity: DEFAULT_GLASS_OPACITY,
     glassBlur: DEFAULT_GLASS_BLUR,
+    syncUrl: '',
+    syncToken: '',
   };
 }
 
@@ -206,6 +233,8 @@ function normalizeAppConfig(config: Partial<AppConfig> | null | undefined): AppC
     glassTint: glassTint && /^#[0-9a-fA-F]{6}$/.test(glassTint) ? glassTint : defaults.glassTint,
     glassOpacity: Number.isFinite(glassOpacity) ? Math.min(0.96, Math.max(0.12, glassOpacity)) : defaults.glassOpacity,
     glassBlur: Number.isFinite(glassBlur) ? Math.min(40, Math.max(0, glassBlur)) : defaults.glassBlur,
+    syncUrl: typeof config?.syncUrl === 'string' ? config.syncUrl.trim() : '',
+    syncToken: typeof config?.syncToken === 'string' ? config.syncToken.trim() : '',
   };
 }
 
@@ -1996,6 +2025,15 @@ function App() {
   const [glassOpacity, setGlassOpacity] = React.useState(initialConfig.glassOpacity);
   const [glassBlur, setGlassBlur] = React.useState(initialConfig.glassBlur);
   const [appearanceOpen, setAppearanceOpen] = React.useState(false);
+  const [syncOpen, setSyncOpen] = React.useState(false);
+  const [syncUrl, setSyncUrl] = React.useState(initialConfig.syncUrl);
+  const [syncToken, setSyncToken] = React.useState(initialConfig.syncToken);
+  const [syncStatus, setSyncStatus] = React.useState<'idle' | 'syncing' | 'error'>('idle');
+  const [syncError, setSyncError] = React.useState<string | null>(null);
+  const [pairingCode, setPairingCode] = React.useState<string | null>(null);
+  const pairingTimerRef = React.useRef<number | null>(null);
+  const syncInFlightRef = React.useRef(false);
+  const pinnedPathsRef = React.useRef<string[]>(initialConfig.pinnedPaths);
   const [recordingHotkey, setRecordingHotkey] = React.useState(false);
   const [launchAtLogin, setLaunchAtLogin] = React.useState(false);
   const [launchAtLoginReady, setLaunchAtLoginReady] = React.useState(!IS_TAURI);
@@ -2396,6 +2434,142 @@ function App() {
     };
   }, [checkForUpdates, replaceAvailableUpdate, supportsInAppUpdater]);
 
+  pinnedPathsRef.current = pinnedPaths;
+
+  const stopPairing = React.useCallback(() => {
+    if (pairingTimerRef.current !== null) {
+      window.clearInterval(pairingTimerRef.current);
+      pairingTimerRef.current = null;
+    }
+    setPairingCode(null);
+  }, []);
+
+  const runSync = React.useCallback(async () => {
+    if (!IS_TAURI || !syncUrl.trim() || !syncToken.trim() || syncInFlightRef.current) {
+      return;
+    }
+    syncInFlightRef.current = true;
+    setSyncStatus('syncing');
+    setSyncError(null);
+    try {
+      const current = stateRef.current;
+      const result = await invoke<SyncResult>('sync_now', {
+        notesDir: current.notesDir,
+        serverUrl: syncUrl.trim(),
+        syncToken: syncToken.trim(),
+        pinnedPaths: pinnedPathsRef.current,
+        activeNotePath: current.notePath || null,
+      });
+
+      const prevPinned = [...pinnedPathsRef.current].sort().join('\0');
+      const nextPinned = [...result.pinnedPaths].sort().join('\0');
+      if (prevPinned !== nextPinned) {
+        setPinnedPaths(result.pinnedPaths);
+      }
+
+      if (result.activeNoteChanged) {
+        const latest = stateRef.current;
+        const nextPath = result.activeNotePath || latest.notePath;
+        if (latest.content === latest.savedContent && nextPath) {
+          const refreshed = await invoke<string>('read_note', {
+            notesDir: latest.notesDir,
+            notePath: nextPath,
+          }).catch(() => null);
+          if (refreshed !== null) {
+            setState(prev =>
+              prev.content === prev.savedContent
+                ? { ...prev, notePath: nextPath, content: refreshed, savedContent: refreshed }
+                : prev,
+            );
+          }
+        }
+      }
+
+      if (result.pulled > 0 || result.pushed > 0) {
+        void invoke<NoteEntry[]>('list_notes', { notesDir: current.notesDir, query: '' })
+          .then(entries => setNotes(entries))
+          .catch(() => undefined);
+      }
+
+      setSyncStatus('idle');
+    } catch (error: unknown) {
+      setSyncError(error instanceof Error ? error.message : String(error));
+      setSyncStatus('error');
+    } finally {
+      syncInFlightRef.current = false;
+    }
+  }, [syncToken, syncUrl]);
+
+  const startSyncSignIn = React.useCallback(async () => {
+    if (!IS_TAURI) {
+      return;
+    }
+    const serverUrl = syncUrl.trim();
+    if (!serverUrl) {
+      setSyncError('Enter a sync server URL first');
+      setSyncStatus('error');
+      return;
+    }
+    stopPairing();
+    setSyncError(null);
+    try {
+      const started = await invoke<PairingStartResult>('sync_start_pairing', { serverUrl });
+      setPairingCode(started.code);
+      void openUrl(started.verificationUrl).catch(() => undefined);
+
+      pairingTimerRef.current = window.setInterval(() => {
+        void invoke<PairingPollResult>('sync_poll_pairing', {
+          serverUrl,
+          pollToken: started.pollToken,
+        })
+          .then(polled => {
+            if (polled.status === 'approved' && polled.token) {
+              stopPairing();
+              setSyncToken(polled.token);
+              setSyncError(null);
+              setSyncStatus('idle');
+            } else if (polled.status === 'expired') {
+              stopPairing();
+              setSyncError('Sign-in expired, try again');
+              setSyncStatus('error');
+            }
+          })
+          .catch(() => undefined);
+      }, 2000);
+    } catch (error: unknown) {
+      setSyncError(error instanceof Error ? error.message : String(error));
+      setSyncStatus('error');
+    }
+  }, [stopPairing, syncUrl]);
+
+  React.useEffect(() => () => stopPairing(), [stopPairing]);
+
+  React.useEffect(() => {
+    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
+      return;
+    }
+    const initial = window.setTimeout(() => {
+      void runSync();
+    }, 1000);
+    const interval = window.setInterval(() => {
+      void runSync();
+    }, 15_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, [appConfigReady, runSync, syncToken, syncUrl]);
+
+  React.useEffect(() => {
+    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void runSync();
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [appConfigReady, pinnedPaths, runSync, state.savedContent, syncToken, syncUrl]);
+
   // Register the chosen hotkey with the backend whenever it changes. Native
   // persistence is handled by the app-config effect below.
   const hotkeyAppliedRef = React.useRef(false);
@@ -2489,9 +2663,12 @@ function App() {
         acceptedHotkeyRef.current = next.hotkey;
         setAcceptedHotkey(next.hotkey);
         setPinnedPaths(next.pinnedPaths);
+        pinnedPathsRef.current = next.pinnedPaths;
         setGlassTint(next.glassTint);
         setGlassOpacity(next.glassOpacity);
         setGlassBlur(next.glassBlur);
+        setSyncUrl(next.syncUrl);
+        setSyncToken(next.syncToken);
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -2521,6 +2698,8 @@ function App() {
       glassTint,
       glassOpacity,
       glassBlur,
+      syncUrl,
+      syncToken,
     });
     if (!IS_TAURI) {
       writeBrowserPreviewConfig(config);
@@ -2529,7 +2708,7 @@ function App() {
     void invoke('write_app_config', { config }).catch((error: unknown) => {
       setState(prev => ({ ...prev, status: 'error', message: `Settings: ${String(error)}` }));
     });
-  }, [acceptedHotkey, appConfigReady, glassBlur, glassOpacity, glassTint, pinnedPaths, state.notePath, state.notesDir]);
+  }, [acceptedHotkey, appConfigReady, glassBlur, glassOpacity, glassTint, pinnedPaths, state.notePath, state.notesDir, syncToken, syncUrl]);
 
   // Load the initial note once settings have loaded. Subsequent folder/note
   // changes are driven explicitly by loadNote/openNote/createNewNote.
@@ -2890,6 +3069,89 @@ function App() {
                 </div>
               </div>
             </details>
+
+            {IS_TAURI ? (
+              <details
+                className="settingsFold"
+                open={syncOpen}
+                onToggle={event => setSyncOpen(event.currentTarget.open)}
+              >
+                <summary className="settingsFoldSummary">
+                  <span>
+                    Sync
+                    {syncToken ? <span className="settingMeta"> on</span> : null}
+                  </span>
+                </summary>
+
+                <div className="settingsFoldBody">
+                  <label className="syncField">
+                    <span>Server URL</span>
+                    <input
+                      type="url"
+                      placeholder="https://notes.example.com"
+                      value={syncUrl}
+                      onChange={event => setSyncUrl(event.target.value)}
+                    />
+                  </label>
+
+                  <div className="settingRow">
+                    <strong>
+                      {pairingCode
+                        ? `Approve ${pairingCode}`
+                        : syncToken
+                          ? syncStatus === 'error'
+                            ? 'Sync error'
+                            : 'Connected'
+                          : 'Passkey sign-in'}
+                    </strong>
+                    <div className="syncActions">
+                      {pairingCode ? (
+                        <button className="hotkeyButton" type="button" onClick={stopPairing}>
+                          Cancel
+                        </button>
+                      ) : syncToken ? (
+                        <>
+                          <button
+                            className="hotkeyButton"
+                            type="button"
+                            disabled={syncStatus === 'syncing'}
+                            title={syncError ?? undefined}
+                            onClick={() => {
+                              void runSync();
+                            }}
+                          >
+                            {syncStatus === 'syncing' ? 'Syncing…' : 'Sync'}
+                          </button>
+                          <button
+                            className="hotkeyButton"
+                            type="button"
+                            onClick={() => {
+                              stopPairing();
+                              setSyncToken('');
+                              setSyncError(null);
+                              setSyncStatus('idle');
+                            }}
+                          >
+                            Sign out
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="hotkeyButton hotkeyButton-recording"
+                          type="button"
+                          title={syncError ?? undefined}
+                          onClick={() => {
+                            void startSyncSignIn();
+                          }}
+                        >
+                          Sign in
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </details>
+            ) : null}
 
             <div className="settingRow">
               <strong>Launch at login</strong>

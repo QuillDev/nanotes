@@ -15,7 +15,11 @@
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "tauri:build": "tauri build",
-    "check": "tsc && vite build",
+    "server": "bun run server/main.ts",
+    "server:setup-link": "bun run server/setup-link.ts",
+    "typecheck:server": "tsc -p tsconfig.server.json",
+    "test:server": "bun test tests/server.test.ts",
+    "check": "tsc && vite build && tsc -p tsconfig.server.json",
     "test:editor": "node scripts/test-editor.mjs"
   },
   "dependencies": {
@@ -33,6 +37,7 @@
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.14",
     "@lezer/highlight": "^1.2.3",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-autostart": "~2",
     "@tauri-apps/plugin-global-shortcut": "^2.3.0",
@@ -42,10 +47,12 @@
     "@uiw/react-codemirror": "^4.25.10",
     "@vitejs/plugin-react": "^5.1.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.6",
+    "@types/bun": "^1.4.5",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "playwright": "^1.64.0",

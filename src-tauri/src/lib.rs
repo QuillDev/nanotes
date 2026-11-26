@@ -1,3 +1,5 @@
+mod sync;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -53,6 +55,10 @@ struct AppConfig {
     glass_tint: String,
     glass_opacity: f64,
     glass_blur: f64,
+    #[serde(default)]
+    sync_url: String,
+    #[serde(default)]
+    sync_token: String,
 }
 
 impl Default for AppConfig {
@@ -65,6 +71,8 @@ impl Default for AppConfig {
             glass_tint: "#09090c".to_string(),
             glass_opacity: 0.32,
             glass_blur: 0.0,
+            sync_url: String::new(),
+            sync_token: String::new(),
         }
     }
 }
@@ -303,15 +311,19 @@ fn write_note(
     let title = title_from_content(&content);
     let target = unique_note_path(&root, &title, current.as_deref());
 
+    let target_rel = relative_note_path(&root, &target)?;
     fs::write(&target, content).map_err(|error| error.to_string())?;
     if let Some(current) = current {
         if current != target && current.exists() {
+            if let Ok(old_rel) = relative_note_path(&root, &current) {
+                sync::track_local_rename(&root, &old_rel, &target_rel);
+            }
             fs::remove_file(&current).map_err(|error| error.to_string())?;
         }
     }
 
     Ok(NoteSaveResult {
-        path: relative_note_path(&root, &target)?,
+        path: target_rel,
         title,
     })
 }
@@ -752,6 +764,33 @@ fn register_hotkey(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[tauri::command]
+async fn sync_start_pairing(
+    server_url: String,
+    device_name: Option<String>,
+) -> Result<sync::PairingStartResult, String> {
+    sync::start_pairing(&server_url, device_name.as_deref()).await
+}
+
+#[tauri::command]
+async fn sync_poll_pairing(
+    server_url: String,
+    poll_token: String,
+) -> Result<sync::PairingPollResult, String> {
+    sync::poll_pairing(&server_url, &poll_token).await
+}
+
+#[tauri::command]
+async fn sync_now(
+    notes_dir: String,
+    server_url: String,
+    sync_token: String,
+    pinned_paths: Vec<String>,
+    active_note_path: Option<String>,
+) -> Result<sync::SyncResult, String> {
+    sync::sync_notes(&notes_dir, &server_url, &sync_token, pinned_paths, active_note_path).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_autostart::Builder::new().build());
@@ -773,7 +812,10 @@ pub fn run() {
             read_app_config,
             write_app_config,
             set_hotkey,
-            clear_hotkey
+            clear_hotkey,
+            sync_start_pairing,
+            sync_poll_pairing,
+            sync_now
         ])
         .on_window_event(|window, event| match event {
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => save_window_frame(window),
