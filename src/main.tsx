@@ -2030,7 +2030,9 @@ function App() {
   const [syncToken, setSyncToken] = React.useState(initialConfig.syncToken);
   const [syncStatus, setSyncStatus] = React.useState<'idle' | 'syncing' | 'error'>('idle');
   const [syncError, setSyncError] = React.useState<string | null>(null);
+  const [pairingStarting, setPairingStarting] = React.useState(false);
   const [pairingCode, setPairingCode] = React.useState<string | null>(null);
+  const [pairingUrl, setPairingUrl] = React.useState<string | null>(null);
   const pairingTimerRef = React.useRef<number | null>(null);
   const syncInFlightRef = React.useRef(false);
   const pinnedPathsRef = React.useRef<string[]>(initialConfig.pinnedPaths);
@@ -2441,7 +2443,9 @@ function App() {
       window.clearInterval(pairingTimerRef.current);
       pairingTimerRef.current = null;
     }
+    setPairingStarting(false);
     setPairingCode(null);
+    setPairingUrl(null);
   }, []);
 
   const runSync = React.useCallback(async () => {
@@ -2501,7 +2505,7 @@ function App() {
   }, [syncToken, syncUrl]);
 
   const startSyncSignIn = React.useCallback(async () => {
-    if (!IS_TAURI) {
+    if (!IS_TAURI || pairingStarting) {
       return;
     }
     const serverUrl = syncUrl.trim();
@@ -2511,11 +2515,17 @@ function App() {
       return;
     }
     stopPairing();
+    setPairingStarting(true);
     setSyncError(null);
+    setSyncStatus('idle');
     try {
       const started = await invoke<PairingStartResult>('sync_start_pairing', { serverUrl });
+      setPairingStarting(false);
       setPairingCode(started.code);
-      void openUrl(started.verificationUrl).catch(() => undefined);
+      setPairingUrl(started.verificationUrl);
+      void openUrl(started.verificationUrl).catch((error: unknown) => {
+        setSyncError(`Could not open browser: ${error instanceof Error ? error.message : String(error)}`);
+      });
 
       pairingTimerRef.current = window.setInterval(() => {
         void invoke<PairingPollResult>('sync_poll_pairing', {
@@ -2537,10 +2547,11 @@ function App() {
           .catch(() => undefined);
       }, 2000);
     } catch (error: unknown) {
+      setPairingStarting(false);
       setSyncError(error instanceof Error ? error.message : String(error));
       setSyncStatus('error');
     }
-  }, [stopPairing, syncUrl]);
+  }, [pairingStarting, stopPairing, syncUrl]);
 
   React.useEffect(() => () => stopPairing(), [stopPairing]);
 
@@ -3106,9 +3117,26 @@ function App() {
                     </strong>
                     <div className="syncActions">
                       {pairingCode ? (
-                        <button className="hotkeyButton" type="button" onClick={stopPairing}>
-                          Cancel
-                        </button>
+                        <>
+                          {pairingUrl ? (
+                            <button
+                              className="hotkeyButton hotkeyButton-recording"
+                              type="button"
+                              onClick={() => {
+                                void openUrl(pairingUrl).catch((error: unknown) => {
+                                  setSyncError(
+                                    `Could not open browser: ${error instanceof Error ? error.message : String(error)}`,
+                                  );
+                                });
+                              }}
+                            >
+                              Open
+                            </button>
+                          ) : null}
+                          <button className="hotkeyButton" type="button" onClick={stopPairing}>
+                            Cancel
+                          </button>
+                        </>
                       ) : syncToken ? (
                         <>
                           <button
@@ -3139,16 +3167,17 @@ function App() {
                         <button
                           className="hotkeyButton hotkeyButton-recording"
                           type="button"
-                          title={syncError ?? undefined}
+                          disabled={pairingStarting}
                           onClick={() => {
                             void startSyncSignIn();
                           }}
                         >
-                          Sign in
+                          {pairingStarting ? 'Connecting…' : 'Sign in'}
                         </button>
                       )}
                     </div>
                   </div>
+                  {syncError ? <div className="syncError">{syncError}</div> : null}
                 </div>
               </details>
             ) : null}
