@@ -103,17 +103,74 @@ export function normalizeNotePath(rawPath: string | undefined, content: string):
   return `${sanitizeFilename(titleFromContent(content))}.md`;
 }
 
+export interface NotesHooks {
+  beforeRead?: (noteId?: string) => void;
+  onExternalContent?: (note: SyncedNote) => void;
+  onNoteChanged?: (note: SyncedNote) => void;
+}
+
 export class NotesStore {
+  private hooks: NotesHooks | null = null;
+
   constructor(private readonly database: Database) {}
 
+  setHooks(hooks: NotesHooks): void {
+    this.hooks = hooks;
+  }
+
   currentRev(): number {
+    this.hooks?.beforeRead?.();
+    return Number(readSetting(this.database, "sync_rev") ?? "0");
+  }
+
+  private rawRev(): number {
     return Number(readSetting(this.database, "sync_rev") ?? "0");
   }
 
   private nextRev(): number {
-    const next = this.currentRev() + 1;
+    const next = this.rawRev() + 1;
     writeSetting(this.database, "sync_rev", String(next));
     return next;
+  }
+
+  getRaw(id: string): SyncedNote | null {
+    const row = this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(id);
+    return row ? rowToNote(row) : null;
+  }
+
+  getYjsState(id: string): Uint8Array | null {
+    const row = this.database
+      .query<{ yjs_state: Uint8Array | null }, [string]>("SELECT yjs_state FROM notes WHERE id = ?")
+      .get(id);
+    if (!row || !row.yjs_state) return null;
+    return row.yjs_state instanceof Uint8Array ? row.yjs_state : new Uint8Array(row.yjs_state);
+  }
+
+  saveYjsState(id: string, state: Uint8Array): void {
+    this.database.query("UPDATE notes SET yjs_state = ? WHERE id = ?").run(state, id);
+  }
+
+  saveFromCollab(id: string, yjsState: Uint8Array, content: string, now: number): SyncedNote | null {
+    return this.database.transaction(() => {
+      const existing = this.database
+        .query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL")
+        .get(id);
+      if (!existing) return null;
+      const title = titleFromContent(content);
+      const desiredPath = normalizeNotePath(undefined, content);
+      const path = this.uniqueActivePath(desiredPath, id);
+      const hash = sha256Hex(content);
+      const rev = this.nextRev();
+      this.database
+        .query(
+          `UPDATE notes
+           SET path = ?, title = ?, content = ?, content_hash = ?, yjs_state = ?, rev = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(path, title, content, hash, yjsState, rev, now, id);
+      const updated = this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(id) as NoteRow;
+      return rowToNote(updated);
+    })();
   }
 
   private uniqueActivePath(desiredPath: string, excludeId: string | null): string {
@@ -128,6 +185,7 @@ export class NotesStore {
   }
 
   list(query?: string, limit = 200): NoteSummary[] {
+    this.hooks?.beforeRead?.();
     const rows = this.database
       .query<NoteRow, []>("SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY pinned DESC, updated_at DESC")
       .all();
@@ -147,6 +205,7 @@ export class NotesStore {
   }
 
   get(idOrPath: string): SyncedNote | null {
+    this.hooks?.beforeRead?.();
     const byId = this.database
       .query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL")
       .get(idOrPath);
@@ -158,7 +217,8 @@ export class NotesStore {
   }
 
   changesSince(sinceRev: number): { rev: number; changes: SyncedNote[] } {
-    const rev = this.currentRev();
+    this.hooks?.beforeRead?.();
+    const rev = this.rawRev();
     const rows = this.database
       .query<NoteRow, [number]>("SELECT * FROM notes WHERE rev > ? ORDER BY rev ASC")
       .all(sinceRev);
@@ -166,7 +226,7 @@ export class NotesStore {
   }
 
   create(input: { content: string; path?: string; pinned?: boolean }, now: number): SyncedNote {
-    return this.database.transaction(() => {
+    const created = this.database.transaction(() => {
       const id = randomUUID();
       const desired = normalizeNotePath(input.path, input.content);
       const path = this.uniqueActivePath(desired, id);
@@ -182,6 +242,8 @@ export class NotesStore {
         .run(id, path, title, input.content, hash, pinned, rev, now, now);
       return rowToNote(this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(id) as NoteRow);
     })();
+    this.hooks?.onExternalContent?.(created);
+    return created;
   }
 
   update(
@@ -189,8 +251,14 @@ export class NotesStore {
     changes: { content?: string; pinned?: boolean; path?: string },
     now: number,
   ): SyncedNote | null {
-    return this.database.transaction(() => {
-      const current = this.get(idOrPath);
+    this.hooks?.beforeRead?.();
+    const updated = this.database.transaction(() => {
+      const current = this.database
+        .query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL")
+        .get(idOrPath)
+        ?? this.database
+          .query<NoteRow, [string]>("SELECT * FROM notes WHERE path = ? AND deleted_at IS NULL")
+          .get(idOrPath);
       if (!current) return null;
       const content = changes.content ?? current.content;
       const title = titleFromContent(content);
@@ -201,7 +269,7 @@ export class NotesStore {
             ? normalizeNotePath(undefined, content)
             : current.path;
       const path = this.uniqueActivePath(desiredPath, current.id);
-      const pinned = changes.pinned !== undefined ? (changes.pinned ? 1 : 0) : current.pinned ? 1 : 0;
+      const pinned = changes.pinned !== undefined ? (changes.pinned ? 1 : 0) : current.pinned;
       const hash = sha256Hex(content);
       const rev = this.nextRev();
       this.database
@@ -213,6 +281,14 @@ export class NotesStore {
         .run(path, title, content, hash, pinned, rev, now, current.id);
       return rowToNote(this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(current.id) as NoteRow);
     })();
+    if (updated) {
+      if (changes.content !== undefined) {
+        this.hooks?.onExternalContent?.(updated);
+      } else {
+        this.hooks?.onNoteChanged?.(updated);
+      }
+    }
+    return updated;
   }
 
   append(idOrPath: string, text: string, now: number): SyncedNote | null {
@@ -223,23 +299,36 @@ export class NotesStore {
   }
 
   remove(idOrPath: string, now: number): SyncedNote | null {
-    return this.database.transaction(() => {
-      const current = this.get(idOrPath);
+    this.hooks?.beforeRead?.();
+    const removed = this.database.transaction(() => {
+      const current = this.database
+        .query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL")
+        .get(idOrPath)
+        ?? this.database
+          .query<NoteRow, [string]>("SELECT * FROM notes WHERE path = ? AND deleted_at IS NULL")
+          .get(idOrPath);
       if (!current) return null;
       const rev = this.nextRev();
       this.database
         .query(
           `UPDATE notes
-           SET content = '', content_hash = ?, pinned = 0, deleted_at = ?, rev = ?, updated_at = ?
+           SET content = '', content_hash = ?, yjs_state = NULL, pinned = 0, deleted_at = ?, rev = ?, updated_at = ?
            WHERE id = ?`,
         )
         .run(sha256Hex(""), now, rev, now, current.id);
       return rowToNote(this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(current.id) as NoteRow);
     })();
+    if (removed) {
+      this.hooks?.onExternalContent?.(removed);
+    }
+    return removed;
   }
 
   push(ops: readonly SyncPushOp[], now: number): { rev: number; results: SyncPushResult[] } {
-    return this.database.transaction(() => {
+    this.hooks?.beforeRead?.();
+    const contentChanged: SyncedNote[] = [];
+    const metaChanged: SyncedNote[] = [];
+    const output = this.database.transaction(() => {
       const results: SyncPushResult[] = [];
       for (const op of ops) {
         const id = op.id.trim() || randomUUID();
@@ -255,7 +344,7 @@ export class NotesStore {
             this.database
               .query(
                 `UPDATE notes
-                 SET content = '', content_hash = ?, pinned = 0, deleted_at = ?, rev = ?, updated_at = ?
+                 SET content = '', content_hash = ?, yjs_state = NULL, pinned = 0, deleted_at = ?, rev = ?, updated_at = ?
                  WHERE id = ?`,
               )
               .run(sha256Hex(""), now, rev, now, id);
@@ -274,8 +363,13 @@ export class NotesStore {
               )
               .run(path, title, content, hash, pinned, rev, now, id);
           }
-          const updated = this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(id) as NoteRow;
-          results.push({ id, status: "ok", note: rowToNote(updated) });
+          const updated = rowToNote(this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(id) as NoteRow);
+          if (op.deleted || op.content !== undefined) {
+            contentChanged.push(updated);
+          } else {
+            metaChanged.push(updated);
+          }
+          results.push({ id, status: "ok", note: updated });
           continue;
         }
 
@@ -288,8 +382,9 @@ export class NotesStore {
                VALUES (?, ?, 'Untitled', '', ?, 0, ?, ?, ?, ?)`,
             )
             .run(id, path, sha256Hex(""), rev, now, now, now);
-          const created = this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(id) as NoteRow;
-          results.push({ id, status: "ok", note: rowToNote(created) });
+          const created = rowToNote(this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(id) as NoteRow);
+          contentChanged.push(created);
+          results.push({ id, status: "ok", note: created });
           continue;
         }
 
@@ -306,10 +401,15 @@ export class NotesStore {
              VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
           )
           .run(id, path, title, content, hash, pinned, rev, now, now);
-        const created = this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(id) as NoteRow;
-        results.push({ id, status: "ok", note: rowToNote(created) });
+        const created = rowToNote(this.database.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?").get(id) as NoteRow);
+        contentChanged.push(created);
+        results.push({ id, status: "ok", note: created });
       }
-      return { rev: this.currentRev(), results };
+      return { rev: this.rawRev(), results };
     })();
+
+    for (const note of contentChanged) this.hooks?.onExternalContent?.(note);
+    for (const note of metaChanged) this.hooks?.onNoteChanged?.(note);
+    return output;
   }
 }

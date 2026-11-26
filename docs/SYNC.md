@@ -6,6 +6,7 @@
 
 ```bash
 bun install
+bun run build:web
 NANOTES_DATABASE=./nanotes.sqlite \
 NANOTES_ORIGIN=https://notes.example.com \
 NANOTES_MCP_TOKEN="$(openssl rand -hex 32)" \
@@ -41,7 +42,7 @@ Open the printed URL in your browser and register your passkey. Additional passk
 2. Enter your sync server URL (e.g. `https://notes.example.com`) and click **Sign in**.
 3. Approve the device in your browser with your passkey — `nanotes` receives a revocable per-device token and begins syncing automatically.
 
-Notes stay local-first as plain `.md` files in your notes folder. Offline edits, renames, pins, and deletes sync cleanly across machines; if two machines edit the same note offline, `nanotes` preserves both versions with a conflict copy.
+Notes stay local-first as plain `.md` files in your notes folder while syncing live over WebSockets with Yjs CRDTs (`/api/ws`). Open the same note on multiple desktop machines, in the web app, or while an AI agent edits it over `/mcp`, and keystrokes and cursors merge in real time — including offline edits when a device reconnects.
 
 ## Connecting an AI agent via MCP
 

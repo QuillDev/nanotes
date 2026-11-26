@@ -787,8 +787,43 @@ async fn sync_now(
     sync_token: String,
     pinned_paths: Vec<String>,
     active_note_path: Option<String>,
+    live_note_id: Option<String>,
 ) -> Result<sync::SyncResult, String> {
-    sync::sync_notes(&notes_dir, &server_url, &sync_token, pinned_paths, active_note_path).await
+    sync::sync_notes(
+        &notes_dir,
+        &server_url,
+        &sync_token,
+        pinned_paths,
+        active_note_path,
+        live_note_id,
+    )
+    .await
+}
+
+#[tauri::command]
+fn sync_note_id_for_path(notes_dir: String, note_path: String) -> Result<Option<String>, String> {
+    sync::note_id_for_path(&notes_dir, &note_path)
+}
+
+#[tauri::command]
+fn sync_read_yjs_state(notes_dir: String, note_id: String) -> Result<Option<String>, String> {
+    sync::read_yjs_state_hex(&notes_dir, &note_id)
+}
+
+#[tauri::command]
+fn sync_write_yjs_state(notes_dir: String, note_id: String, state_hex: String) -> Result<(), String> {
+    sync::write_yjs_state_hex(&notes_dir, &note_id, &state_hex)
+}
+
+#[tauri::command]
+fn sync_mark_note_synced(
+    notes_dir: String,
+    note_id: String,
+    path: String,
+    rev: i64,
+    content: String,
+) -> Result<(), String> {
+    sync::mark_note_synced(&notes_dir, &note_id, &path, rev, &content)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -815,7 +850,11 @@ pub fn run() {
             clear_hotkey,
             sync_start_pairing,
             sync_poll_pairing,
-            sync_now
+            sync_now,
+            sync_note_id_for_path,
+            sync_read_yjs_state,
+            sync_write_yjs_state,
+            sync_mark_note_synced
         ])
         .on_window_event(|window, event| match event {
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => save_window_frame(window),

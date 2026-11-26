@@ -14,12 +14,13 @@
     "dev": "tauri dev",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
+    "build:web": "bun build src/web-app.tsx --outdir dist-web --target browser --minify",
     "tauri:build": "tauri build",
     "server": "bun run server/main.ts",
     "server:setup-link": "bun run server/setup-link.ts",
     "typecheck:server": "tsc -p tsconfig.server.json",
     "test:server": "bun test tests/server.test.ts",
-    "check": "tsc && vite build && tsc -p tsconfig.server.json",
+    "check": "tsc && vite build && bun run build:web && tsc -p tsconfig.server.json",
     "test:editor": "node scripts/test-editor.mjs"
   },
   "dependencies": {
@@ -48,6 +49,9 @@
     "@vitejs/plugin-react": "^5.1.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "y-codemirror.next": "^0.3.6",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.33",
     "zod": "^4.6.7"
   },
   "devDependencies": {

@@ -1,4 +1,8 @@
+import type { Server, WebSocketHandler } from "bun";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { Auth } from "./auth.ts";
+import { CollabHub, type WsClientData } from "./collab.ts";
 import { openDatabase } from "./database.ts";
 import { handleMcp } from "./mcp.ts";
 import { NotesStore, type SyncPushOp } from "./notes.ts";
@@ -14,7 +18,25 @@ export interface AppOptions {
   /** Public origin (https://...); passkey auth is enabled when set. */
   readonly origin: string | null;
   readonly clock?: () => number;
+  readonly webDistDir?: string | null;
+  readonly flushDebounceMs?: number;
 }
+
+const LIVE_WEB_SHELL_HTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#09090c" />
+  <title>nanotes</title>
+  <link rel="stylesheet" href="/assets/web-app.css" />
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/assets/web-app.js"></script>
+</body>
+</html>
+`;
 
 function json(value: unknown, init: ResponseInit = {}): Response {
   return Response.json(value, init);
@@ -53,11 +75,13 @@ function requestOrigin(req: Request, configuredOrigin: string | null): string {
 }
 
 export function createApp(options: AppOptions): {
-  fetch: (req: Request) => Promise<Response>;
+  fetch: (req: Request, server?: Server<WsClientData>) => Promise<Response>;
+  websocket: WebSocketHandler<WsClientData>;
   close: () => void;
   notes: NotesStore;
   auth: Auth;
   passkeys: Passkeys | null;
+  collab: CollabHub;
 } {
   const clock = options.clock ?? Date.now;
   const database = openDatabase(options.databasePath);
@@ -68,6 +92,15 @@ export function createApp(options: AppOptions): {
     secureCookies: options.secureCookies,
   });
   const passkeys = options.origin ? new Passkeys(database, options.origin) : null;
+  const collab = new CollabHub(notes, auth, clock, {
+    flushDebounceMs: options.flushDebounceMs,
+  });
+  notes.setHooks({
+    beforeRead: (noteId) => collab.flushNote(noteId),
+    onExternalContent: (note) => collab.applyExternalContent(note),
+    onNoteChanged: (note) => collab.broadcastNoteChanged(note),
+  });
+  const webDistDir = options.webDistDir === undefined ? join(import.meta.dir, "..", "dist-web") : options.webDistDir;
 
   function ceremony(step: () => Response): Response {
     try {
@@ -238,29 +271,106 @@ export function createApp(options: AppOptions): {
       return json({ rev: notes.currentRev(), notes: notes.list(query) });
     }
 
+    if (path === "/api/notes" && req.method === "POST") {
+      const payload = await body(req);
+      const content = typeof payload["content"] === "string" ? payload["content"] : "";
+      const notePath = typeof payload["path"] === "string" ? payload["path"] : undefined;
+      const pinned = payload["pinned"] === true;
+      return json(notes.create({ content, path: notePath, pinned }, now), { status: 201 });
+    }
+
     const noteMatch = /^\/api\/notes\/([^/]+)$/.exec(path);
     if (noteMatch && req.method === "GET") {
       const note = notes.get(decodeURIComponent(noteMatch[1] as string));
       return note ? json(note) : error(404, "note not found");
     }
 
+    if (noteMatch && req.method === "PATCH") {
+      const id = decodeURIComponent(noteMatch[1] as string);
+      const payload = await body(req);
+      const updated = notes.update(
+        id,
+        {
+          ...(typeof payload["content"] === "string" ? { content: payload["content"] } : {}),
+          ...(typeof payload["path"] === "string" ? { path: payload["path"] } : {}),
+          ...(typeof payload["pinned"] === "boolean" ? { pinned: payload["pinned"] } : {}),
+        },
+        now,
+      );
+      return updated ? json(updated) : error(404, "note not found");
+    }
+
+    if (noteMatch && req.method === "DELETE") {
+      const removed = notes.remove(decodeURIComponent(noteMatch[1] as string), now);
+      return removed ? json({ ok: true }) : error(404, "note not found");
+    }
+
     return error(404, "not found");
   }
 
-  async function fetch(req: Request): Promise<Response> {
+  async function fetch(req: Request, server?: Server<WsClientData>): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === "/health") return json({ ok: true });
+    if (url.pathname === "/api/ws") {
+      if (!server) return error(426, "websocket upgrade required");
+      const now = clock();
+      const device = auth.deviceFromRequest(req, now);
+      let authed = false;
+      let deviceName = "Web";
+      if (device) {
+        authed = true;
+        deviceName = device.name;
+      } else if (auth.isSignedIn(req, now)) {
+        if (!sameOrigin(req)) return error(403, "cross-origin websocket");
+        authed = true;
+        deviceName = "Web";
+      }
+      const upgraded = server.upgrade(req, {
+        data: collab.createClientData(authed, deviceName),
+      });
+      return upgraded ? (undefined as unknown as Response) : error(400, "websocket upgrade failed");
+    }
     if (url.pathname === "/mcp") {
       if (!auth.mcpEnabled()) return error(404, "not found");
       if (!auth.hasMcpToken(req)) return error(401, "bearer token required");
       return handleMcp(req, notes, passkeys, clock);
     }
     if (url.pathname.startsWith("/api/")) return api(req, url);
+    if (webDistDir && (url.pathname === "/assets/web-app.js" || url.pathname === "/assets/web-app.css")) {
+      const fileName = url.pathname.slice("/assets/".length);
+      const fullPath = join(webDistDir, fileName);
+      if (existsSync(fullPath)) {
+        const contentType = fileName.endsWith(".css") ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8";
+        return new Response(Bun.file(fullPath), {
+          headers: { "content-type": contentType, "cache-control": "no-cache" },
+        });
+      }
+    }
     if (url.pathname === "/" || url.pathname === "/index.html") {
-      return new Response(WEB_UI_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
+      const hasLiveWeb = Boolean(webDistDir && existsSync(join(webDistDir, "web-app.js")));
+      return new Response(hasLiveWeb ? LIVE_WEB_SHELL_HTML : WEB_UI_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" },
+      });
     }
     return error(404, "not found");
   }
 
-  return { fetch, close: () => database.close(), notes, auth, passkeys };
+  const websocket: WebSocketHandler<WsClientData> = {
+    open: (ws) => collab.onOpen(ws),
+    message: (ws, message) => collab.onMessage(ws, message),
+    close: (ws) => collab.onClose(ws),
+  };
+
+  return {
+    fetch,
+    websocket,
+    close: () => {
+      collab.close();
+      database.close();
+    },
+    notes,
+    auth,
+    passkeys,
+    collab,
+  };
 }

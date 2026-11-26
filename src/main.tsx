@@ -11,12 +11,13 @@ import { json } from '@codemirror/lang-json';
 import { css } from '@codemirror/lang-css';
 import { html } from '@codemirror/lang-html';
 import { HighlightStyle, LanguageDescription, syntaxHighlighting, syntaxTree } from '@codemirror/language';
-import { Prec, StateField } from '@codemirror/state';
-import type { EditorState, Range } from '@codemirror/state';
+import { EditorState, Prec, StateField } from '@codemirror/state';
+import type { Extension, Range } from '@codemirror/state';
 import type { DecorationSet } from '@codemirror/view';
-import { Decoration, drawSelection, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
+import { Decoration, drawSelection, EditorView, keymap, placeholder as cmPlaceholder, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
 import { acceptCompletion, autocompletion, startCompletion, type Completion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
 import { tags } from '@lezer/highlight';
+import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next';
 import { getVersion } from '@tauri-apps/api/app';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { homeDir } from '@tauri-apps/api/path';
@@ -25,6 +26,7 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import { check as checkUpdate, type Update } from '@tauri-apps/plugin-updater';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
+import { CollabClient, NoteCollabSession, bytesToHex, hexToBytes, type CollabConnectionStatus } from './collab';
 import { morphClose, morphOpen, syncMorphHeight, useMorphHeight } from './morph';
 import './styles.css';
 
@@ -80,6 +82,7 @@ interface SyncResult {
   rev: number;
   pinnedPaths: string[];
   activeNotePath?: string | null;
+  activeNoteId?: string | null;
   activeNoteChanged: boolean;
 }
 
@@ -2008,6 +2011,70 @@ function useDebouncedSave(
   }, [state.content, state.notePath, state.savedContent, state.status, state.notesDir, setState, noteGenRef]);
 }
 
+function CollabEditor({
+  session,
+  baseExtensions,
+  initialAnchorRef,
+  onCreateEditor,
+  onChange,
+}: {
+  session: NoteCollabSession;
+  baseExtensions: Extension[];
+  initialAnchorRef: React.RefObject<{ anchor: number; focus: boolean } | null>;
+  onCreateEditor: (view: EditorView) => void;
+  onChange: (value: string) => void;
+}) {
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const onChangeRef = React.useRef(onChange);
+  onChangeRef.current = onChange;
+  const onCreateRef = React.useRef(onCreateEditor);
+  onCreateRef.current = onCreateEditor;
+
+  React.useLayoutEffect(() => {
+    const parent = containerRef.current;
+    if (!parent) {
+      return;
+    }
+
+    const docText = session.ytext.toString();
+    const pendingCursor = initialAnchorRef.current;
+    initialAnchorRef.current = null;
+    const anchor = pendingCursor ? Math.min(pendingCursor.anchor, docText.length) : undefined;
+
+    const state = EditorState.create({
+      doc: docText,
+      ...(anchor !== undefined ? { selection: { anchor } } : {}),
+      extensions: [
+        cmPlaceholder('Start typing…'),
+        EditorView.theme({
+          '&': { height: '100%' },
+          '& .cm-scroller': { height: '100% !important' },
+        }),
+        EditorView.updateListener.of(vu => {
+          if (vu.docChanged) {
+            onChangeRef.current(vu.state.doc.toString());
+          }
+        }),
+        ...baseExtensions,
+        yCollab(session.ytext, session.awareness, { undoManager: session.undoManager }),
+        keymap.of(yUndoManagerKeymap),
+      ],
+    });
+
+    const view = new EditorView({ state, parent });
+    onCreateRef.current(view);
+    if (pendingCursor?.focus) {
+      view.focus();
+    }
+
+    return () => {
+      view.destroy();
+    };
+  }, [baseExtensions, initialAnchorRef, session]);
+
+  return <div style={{ height: '100%', width: '100%' }} ref={containerRef} />;
+}
+
 function App() {
   const initialConfig = React.useMemo(() => (IS_TAURI ? defaultAppConfig() : browserPreviewConfig()), []);
   const [state, setState] = React.useState<NoteState>({
@@ -2030,6 +2097,13 @@ function App() {
   const [syncToken, setSyncToken] = React.useState(initialConfig.syncToken);
   const [syncStatus, setSyncStatus] = React.useState<'idle' | 'syncing' | 'error'>('idle');
   const [syncError, setSyncError] = React.useState<string | null>(null);
+  const [collabStatus, setCollabStatus] = React.useState<CollabConnectionStatus>('disconnected');
+  const [activeNoteId, setActiveNoteId] = React.useState<string | null>(null);
+  const [liveSession, setLiveSession] = React.useState<NoteCollabSession | null>(null);
+  const collabClientRef = React.useRef<CollabClient | null>(null);
+  const liveSessionRef = React.useRef<NoteCollabSession | null>(null);
+  liveSessionRef.current = liveSession;
+  const collabCursorRef = React.useRef<{ anchor: number; focus: boolean } | null>(null);
   const [pairingStarting, setPairingStarting] = React.useState(false);
   const [pairingCode, setPairingCode] = React.useState<string | null>(null);
   const [pairingUrl, setPairingUrl] = React.useState<string | null>(null);
@@ -2109,9 +2183,8 @@ function App() {
     });
   }, []);
 
-  const extensions = React.useMemo(
+  const sharedExtensions = React.useMemo<Extension[]>(
     () => [
-      history(),
       drawSelection(),
       checkboxAutoFormat,
       growFenceForInnerRun,
@@ -2124,7 +2197,6 @@ function App() {
       // false when no popup is open, so Tab still indents normally otherwise.
       // Prec.highest so it beats every other keymap regardless of array order.
       Prec.highest(keymap.of([{ key: 'Tab', run: acceptCompletion }])),
-      keymap.of([...defaultKeymap, ...historyKeymap]),
       // Drop SetextHeading so a `-` line under text is parsed as a list bullet,
       // not as the `---` underline that would turn the paragraph above into a heading.
       markdown({ codeLanguages, extensions: [{ remove: ['SetextHeading'] }] }),
@@ -2152,6 +2224,16 @@ function App() {
       imagePreviewDecorations,
     ],
     [],
+  );
+
+  const extensions = React.useMemo<Extension[]>(
+    () => [history(), keymap.of([...defaultKeymap, ...historyKeymap]), ...sharedExtensions],
+    [sharedExtensions],
+  );
+
+  const collabBaseExtensions = React.useMemo<Extension[]>(
+    () => [keymap.of(defaultKeymap), ...sharedExtensions],
+    [sharedExtensions],
   );
 
   const loadNote = React.useCallback(() => {
@@ -2237,6 +2319,8 @@ function App() {
   const createNewNote = React.useCallback(() => {
     flushPendingSave();
     noteGenRef.current += 1;
+    setActiveNoteId(null);
+    setLiveSession(null);
     setSearchOpen(false);
     setSettingsOpen(false);
     // Clear the editor imperatively so the new note appears the same frame,
@@ -2463,6 +2547,7 @@ function App() {
         syncToken: syncToken.trim(),
         pinnedPaths: pinnedPathsRef.current,
         activeNotePath: current.notePath || null,
+        liveNoteId: liveSessionRef.current?.ready ? liveSessionRef.current.noteId : null,
       });
 
       const prevPinned = [...pinnedPathsRef.current].sort().join('\0');
@@ -2471,7 +2556,11 @@ function App() {
         setPinnedPaths(result.pinnedPaths);
       }
 
-      if (result.activeNoteChanged) {
+      if (result.activeNoteId && stateRef.current.notePath === (result.activeNotePath ?? current.notePath)) {
+        setActiveNoteId(prev => (prev === result.activeNoteId ? prev : (result.activeNoteId ?? null)));
+      }
+
+      if (result.activeNoteChanged && !liveSessionRef.current?.ready) {
         const latest = stateRef.current;
         const nextPath = result.activeNotePath || latest.notePath;
         if (latest.content === latest.savedContent && nextPath) {
@@ -2580,6 +2669,189 @@ function App() {
     }, 1500);
     return () => window.clearTimeout(timer);
   }, [appConfigReady, pinnedPaths, runSync, state.savedContent, syncToken, syncUrl]);
+
+  // Persistent WebSocket live-collab connection for real-time CRDT editing and instant note events.
+  React.useEffect(() => {
+    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
+      collabClientRef.current?.close();
+      collabClientRef.current = null;
+      setLiveSession(null);
+      setActiveNoteId(null);
+      setCollabStatus('disconnected');
+      return;
+    }
+
+    let syncKickTimer: number | null = null;
+    const kickSync = () => {
+      if (syncKickTimer !== null) {
+        window.clearTimeout(syncKickTimer);
+      }
+      syncKickTimer = window.setTimeout(() => {
+        syncKickTimer = null;
+        void runSync();
+      }, 250);
+    };
+
+    const client = new CollabClient({
+      serverUrl: syncUrl.trim(),
+      token: syncToken.trim(),
+      onStatus: status => setCollabStatus(status),
+      onNoteChanged: event => {
+        if (event.id !== liveSessionRef.current?.noteId || event.deletedAt !== null) {
+          kickSync();
+        }
+      },
+      onError: message => {
+        if (message.toLowerCase().includes('token')) {
+          setSyncError(message);
+          setSyncStatus('error');
+        }
+      },
+    });
+    collabClientRef.current = client;
+
+    return () => {
+      if (syncKickTimer !== null) {
+        window.clearTimeout(syncKickTimer);
+      }
+      client.close();
+      if (collabClientRef.current === client) {
+        collabClientRef.current = null;
+      }
+      setLiveSession(null);
+      setCollabStatus('disconnected');
+    };
+  }, [appConfigReady, runSync, syncToken, syncUrl]);
+
+  // Resolve the active note's server ID whenever the active file changes.
+  React.useEffect(() => {
+    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
+      setActiveNoteId(null);
+      return;
+    }
+    if (state.status === 'loading' || !state.notePath.trim()) {
+      setActiveNoteId(null);
+      return;
+    }
+    let cancelled = false;
+    void invoke<string | null>('sync_note_id_for_path', {
+      notesDir: state.notesDir,
+      notePath: state.notePath,
+    })
+      .then(id => {
+        if (!cancelled) {
+          setActiveNoteId(id);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setActiveNoteId(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [appConfigReady, state.notePath, state.notesDir, state.status, syncToken, syncUrl]);
+
+  // Attach a live Yjs room for the active synced note and persist local CRDT state for offline merges.
+  React.useEffect(() => {
+    const client = collabClientRef.current;
+    if (!IS_TAURI || !client || !activeNoteId) {
+      setLiveSession(null);
+      return;
+    }
+
+    let cancelled = false;
+    let session: NoteCollabSession | null = null;
+    const notesDir = stateRef.current.notesDir;
+    const peerName = IS_MAC ? 'macOS' : IS_WINDOWS ? 'Windows' : 'Linux';
+
+    const attachReady = (readySession: NoteCollabSession) => {
+      if (cancelled) return;
+      const view = editorViewRef.current;
+      collabCursorRef.current = view
+        ? { anchor: view.state.selection.main.anchor, focus: view.hasFocus }
+        : null;
+      const mergedText = readySession.ytext.toString();
+      setState(prev =>
+        prev.content === mergedText ? prev : { ...prev, content: mergedText },
+      );
+      setLiveSession(readySession);
+    };
+
+    void invoke<string | null>('sync_read_yjs_state', { notesDir, noteId: activeNoteId })
+      .catch(() => null)
+      .then(savedHex => {
+        if (cancelled || collabClientRef.current !== client) {
+          return;
+        }
+        const savedBytes = savedHex ? hexToBytes(savedHex) : null;
+        const snapshot = stateRef.current;
+        session = client.openNote(activeNoteId, {
+          savedYjsState: savedBytes,
+          localContent: snapshot.content,
+          localDirty: snapshot.content !== snapshot.savedContent,
+          peerName,
+          onReady: () => {
+            if (session) {
+              attachReady(session);
+            }
+          },
+          onPersist: (yjsState, content, rev, remotePath) => {
+            void invoke('sync_write_yjs_state', {
+              notesDir,
+              noteId: activeNoteId,
+              stateHex: bytesToHex(yjsState),
+            }).catch(() => undefined);
+            if (rev !== null && content === stateRef.current.savedContent) {
+              const targetPath = stateRef.current.notePath || remotePath || '';
+              if (targetPath) {
+                void invoke('sync_mark_note_synced', {
+                  notesDir,
+                  noteId: activeNoteId,
+                  path: targetPath,
+                  rev,
+                  content,
+                }).catch(() => undefined);
+              }
+            }
+          },
+          onDeleted: () => {
+            if (!cancelled) {
+              setLiveSession(null);
+              setActiveNoteId(null);
+              void runSync();
+            }
+          },
+        });
+        if (session.ready) {
+          attachReady(session);
+        } else {
+          setLiveSession(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      session?.destroy();
+      setLiveSession(prev => (prev === session ? null : prev));
+    };
+  }, [activeNoteId, runSync, syncToken, syncUrl]);
+
+  // Keep .nanotes-sync.json aligned whenever a live-edited note flushes to its local .md file.
+  React.useEffect(() => {
+    const session = liveSessionRef.current;
+    if (!IS_TAURI || !session || !session.ready || session.rev === null || !state.notePath.trim()) {
+      return;
+    }
+    void invoke('sync_mark_note_synced', {
+      notesDir: state.notesDir,
+      noteId: session.noteId,
+      path: state.notePath,
+      rev: session.rev,
+      content: state.savedContent,
+    }).catch(() => undefined);
+  }, [state.notePath, state.notesDir, state.savedContent]);
 
   // Register the chosen hotkey with the backend whenever it changes. Native
   // persistence is handled by the app-config effect below.
@@ -3090,7 +3362,11 @@ function App() {
                 <summary className="settingsFoldSummary">
                   <span>
                     Sync
-                    {syncToken ? <span className="settingMeta"> on</span> : null}
+                    {syncToken ? (
+                      <span className="settingMeta">
+                        {collabStatus === 'connected' ? ' live' : ' on'}
+                      </span>
+                    ) : null}
                   </span>
                 </summary>
 
@@ -3243,19 +3519,32 @@ function App() {
       ) : null}
 
       <section className={settingsOpen ? 'editorShell editorShell-hidden' : 'editorShell'}>
-        <CodeMirror
-          autoFocus
-          basicSetup={false}
-          extensions={extensions}
-          height="100%"
-          placeholder="Start typing…"
-          theme="dark"
-          value={state.content}
-          onCreateEditor={view => {
-            editorViewRef.current = view;
-          }}
-          onChange={value => setState(prev => ({ ...prev, content: value }))}
-        />
+        {liveSession ? (
+          <CollabEditor
+            key={liveSession.noteId}
+            session={liveSession}
+            baseExtensions={collabBaseExtensions}
+            initialAnchorRef={collabCursorRef}
+            onCreateEditor={view => {
+              editorViewRef.current = view;
+            }}
+            onChange={value => setState(prev => ({ ...prev, content: value }))}
+          />
+        ) : (
+          <CodeMirror
+            autoFocus
+            basicSetup={false}
+            extensions={extensions}
+            height="100%"
+            placeholder="Start typing…"
+            theme="dark"
+            value={state.content}
+            onCreateEditor={view => {
+              editorViewRef.current = view;
+            }}
+            onChange={value => setState(prev => ({ ...prev, content: value }))}
+          />
+        )}
       </section>
 
     </main>
