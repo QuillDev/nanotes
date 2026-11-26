@@ -97,16 +97,28 @@ export class Auth {
     return row !== null && row.expires_at > now;
   }
 
+  verifyDeviceToken(token: string, now: number): { id: string; name: string } | null {
+    const trimmed = token.trim();
+    if (!trimmed) return null;
+    const hash = hashToken(trimmed);
+    const row = this.database
+      .query<{ id: string; name: string }, [string]>("SELECT id, name FROM device_tokens WHERE token_hash = ?")
+      .get(hash);
+    if (!row) return null;
+    this.database.query("UPDATE device_tokens SET last_used_at = ? WHERE id = ?").run(now, row.id);
+    return row;
+  }
+
   hasDeviceToken(req: Request, now: number): boolean {
     const token = bearerToken(req);
     if (!token) return false;
-    const hash = hashToken(token);
-    const row = this.database
-      .query<{ id: string }, [string]>("SELECT id FROM device_tokens WHERE token_hash = ?")
-      .get(hash);
-    if (!row) return false;
-    this.database.query("UPDATE device_tokens SET last_used_at = ? WHERE id = ?").run(now, row.id);
-    return true;
+    return this.verifyDeviceToken(token, now) !== null;
+  }
+
+  deviceFromRequest(req: Request, now: number): { id: string; name: string } | null {
+    const token = bearerToken(req);
+    if (!token) return null;
+    return this.verifyDeviceToken(token, now);
   }
 
   isSyncAuthorized(req: Request, now: number): boolean {

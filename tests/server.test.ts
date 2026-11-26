@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import * as Y from "yjs";
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from "y-protocols/awareness";
+import { base64ToBytes, bytesToBase64 } from "../shared/text-diff.ts";
 import { createApp } from "../server/app.ts";
 import { b64url, ES256 } from "../server/webauthn.ts";
 
@@ -80,8 +83,8 @@ describe("nanotes sync server", () => {
     });
 
     try {
-      const req = (path: string, init: RequestInit = {}, cookie = "") =>
-        app.fetch(
+      const req = async (path: string, init: RequestInit = {}, cookie = "") =>
+        (await app.fetch(
           new Request(`${origin}${path}`, {
             ...init,
             headers: {
@@ -92,7 +95,7 @@ describe("nanotes sync server", () => {
               ...(init.headers ?? {}),
             },
           }),
-        );
+        )) as Response;
 
       // 1. Mint one-time passkey setup link and register an ES256 passkey.
       const setup = app.passkeys!.createSetupLink(now);
@@ -322,7 +325,12 @@ describe("nanotes sync server", () => {
       origin: "https://notes.example.com",
     });
 
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: app.fetch });
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (req, srv) => app.fetch(req, srv),
+      websocket: app.websocket,
+    });
     try {
       const mcpUrl = new URL("/mcp", server.url);
 
@@ -381,6 +389,207 @@ describe("nanotes sync server", () => {
       expect(changes.changes[0]?.deletedAt).not.toBeNull();
 
       await client.close();
+    } finally {
+      server.stop(true);
+      app.close();
+    }
+  });
+
+  test("live Yjs WebSocket collab merges concurrent edits, offline divergence, awareness cursors, and MCP updates", async () => {
+    const app = createApp({
+      databasePath: ":memory:",
+      passwordHash: null,
+      mcpToken: "mcp-live-secret",
+      secureCookies: false,
+      origin: "https://notes.example.com",
+      webDistDir: null,
+      flushDebounceMs: 25,
+    });
+
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (req, srv) => app.fetch(req, srv),
+      websocket: app.websocket,
+    });
+
+    type WsMsg = Record<string, unknown>;
+    const connectWs = async (token?: string) => {
+      const wsUrl = server.url.toString().replace(/^http/, "ws").replace(/\/$/, "") + "/api/ws";
+      const ws = new WebSocket(wsUrl);
+      const queue: WsMsg[] = [];
+      const waiters: Array<(msg: WsMsg) => void> = [];
+      let closed = false;
+      let closeCode = 0;
+
+      ws.addEventListener("message", (event) => {
+        const parsed = JSON.parse(String(event.data)) as WsMsg;
+        const waiter = waiters.shift();
+        if (waiter) waiter(parsed);
+        else queue.push(parsed);
+      });
+      ws.addEventListener("close", (event) => {
+        closed = true;
+        closeCode = event.code;
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        ws.addEventListener("open", () => resolve(), { once: true });
+        ws.addEventListener("error", () => reject(new Error("ws failed to open")), { once: true });
+      });
+
+      const nextMsg = async (predicate?: (m: WsMsg) => boolean): Promise<WsMsg> => {
+        while (true) {
+          if (queue.length > 0) {
+            const msg = queue.shift()!;
+            if (!predicate || predicate(msg)) return msg;
+            continue;
+          }
+          const msg = await new Promise<WsMsg>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("timed out waiting for ws message")), 3000);
+            waiters.push((m) => {
+              clearTimeout(timer);
+              resolve(m);
+            });
+          });
+          if (!predicate || predicate(msg)) return msg;
+        }
+      };
+
+      const send = (payload: unknown) => ws.send(JSON.stringify(payload));
+      if (token) {
+        send({ type: "auth", token });
+        const authReply = await nextMsg((m) => m["type"] === "authed" || m["type"] === "error");
+        expect(authReply["type"]).toBe("authed");
+      }
+
+      return { ws, send, nextMsg, isClosed: () => closed, closeCode: () => closeCode };
+    };
+
+    try {
+      const now = 1_700_000_000_000;
+      const deviceA = app.auth.createDeviceToken("Windows", now);
+      const deviceB = app.auth.createDeviceToken("macOS", now);
+      const note = app.notes.create({ content: "# Project\n\nAlpha\nBeta\n" }, now);
+
+      // 1. Invalid token is rejected with 4401.
+      const bad = await connectWs();
+      bad.send({ type: "auth", token: "wrong-token" });
+      const badReply = await bad.nextMsg();
+      expect(badReply["type"]).toBe("error");
+      await new Promise((r) => setTimeout(r, 30));
+      expect(bad.isClosed()).toBe(true);
+      expect(bad.closeCode()).toBe(4401);
+
+      // 2. Two devices join the same note and receive canonical initial Yjs state.
+      const peerA = await connectWs(deviceA.token);
+      const peerB = await connectWs(deviceB.token);
+      const docA = new Y.Doc();
+      const docB = new Y.Doc();
+      const textA = docA.getText("content");
+      const textB = docB.getText("content");
+
+      peerA.send({ type: "join", noteId: note.id });
+      const syncA = await peerA.nextMsg((m) => m["type"] === "sync-state");
+      Y.applyUpdate(docA, base64ToBytes(String(syncA["update"])));
+      expect(textA.toString()).toBe("# Project\n\nAlpha\nBeta\n");
+
+      peerB.send({ type: "join", noteId: note.id });
+      const syncB = await peerB.nextMsg((m) => m["type"] === "sync-state");
+      Y.applyUpdate(docB, base64ToBytes(String(syncB["update"])));
+      expect(textB.toString()).toBe("# Project\n\nAlpha\nBeta\n");
+
+      // 3. Concurrent edits in different spots merge cleanly with zero duplication.
+      let updA: Uint8Array | null = null;
+      let updB: Uint8Array | null = null;
+      docA.on("update", (u) => { updA = u; });
+      docB.on("update", (u) => { updB = u; });
+
+      textA.insert(textA.toString().indexOf("Alpha") + 5, " (from Windows)");
+      textB.insert(textB.toString().indexOf("Beta") + 4, " (from macOS)");
+
+      peerA.send({ type: "yjs-update", noteId: note.id, update: bytesToBase64(updA!) });
+      peerB.send({ type: "yjs-update", noteId: note.id, update: bytesToBase64(updB!) });
+
+      const fromB = await peerA.nextMsg((m) => m["type"] === "yjs-update");
+      const fromA = await peerB.nextMsg((m) => m["type"] === "yjs-update");
+      Y.applyUpdate(docA, base64ToBytes(String(fromB["update"])));
+      Y.applyUpdate(docB, base64ToBytes(String(fromA["update"])));
+
+      const expectedMerged = "# Project\n\nAlpha (from Windows)\nBeta (from macOS)\n";
+      expect(textA.toString()).toBe(expectedMerged);
+      expect(textB.toString()).toBe(expectedMerged);
+
+      // Reading via NotesStore (e.g. MCP read_note) flushes the dirty room synchronously.
+      const stored = app.notes.get(note.id);
+      expect(stored?.content).toBe(expectedMerged);
+
+      // 4. Awareness (live cursors) broadcasts to peers and clears on disconnect.
+      const awareA = new Awareness(docA);
+      const awareB = new Awareness(docB);
+      awareA.setLocalState({ user: { name: "Windows", color: "#f65c8e" }, cursor: 10 });
+      peerA.send({
+        type: "awareness",
+        noteId: note.id,
+        update: bytesToBase64(encodeAwarenessUpdate(awareA, [docA.clientID])),
+      });
+      const awareMsg = await peerB.nextMsg((m) => m["type"] === "awareness");
+      applyAwarenessUpdate(awareB, base64ToBytes(String(awareMsg["update"])), "remote");
+      expect(awareB.getStates().get(docA.clientID)?.["user"]?.["name"]).toBe("Windows");
+
+      // 5. MCP append_note streams live Yjs delta directly to connected peers without clobbering.
+      const appended = app.notes.append(note.id, "Gamma (from MCP)", now + 100);
+      expect(appended?.content).toBe(`${expectedMerged}Gamma (from MCP)`);
+
+      const mcpUpdateA = await peerA.nextMsg((m) => m["type"] === "yjs-update");
+      const mcpUpdateB = await peerB.nextMsg((m) => m["type"] === "yjs-update");
+      Y.applyUpdate(docA, base64ToBytes(String(mcpUpdateA["update"])));
+      Y.applyUpdate(docB, base64ToBytes(String(mcpUpdateB["update"])));
+      expect(textA.toString()).toBe(`${expectedMerged}Gamma (from MCP)`);
+      expect(textB.toString()).toBe(`${expectedMerged}Gamma (from MCP)`);
+
+      // 6. Offline divergence: peerB disconnects, both edit independently, peerB reconnects and merges cleanly.
+      peerB.ws.close(1000, "offline");
+      // peerA receives awareness removal when peerB disconnects.
+      const peerAOnly = new Awareness(docA);
+      peerAOnly.setLocalState(null);
+
+      // Edit on peerA while peerB is offline.
+      updA = null;
+      textA.insert(0, "Live ");
+      peerA.send({ type: "yjs-update", noteId: note.id, update: bytesToBase64(updA!) });
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Edit on docB locally while offline.
+      textB.insert(textB.length, "\nOffline line");
+
+      // peerB reconnects with its saved stateVector.
+      const peerB2 = await connectWs(deviceB.token);
+      peerB2.send({
+        type: "join",
+        noteId: note.id,
+        stateVector: bytesToBase64(Y.encodeStateVector(docB)),
+      });
+      const resyncB = await peerB2.nextMsg((m) => m["type"] === "sync-state");
+      Y.applyUpdate(docB, base64ToBytes(String(resyncB["update"])));
+      const missingForServer = Y.encodeStateAsUpdate(docB, base64ToBytes(String(resyncB["stateVector"])));
+      peerB2.send({ type: "yjs-update", noteId: note.id, update: bytesToBase64(missingForServer) });
+
+      const offlineFromB = await peerA.nextMsg((m) => m["type"] === "yjs-update");
+      Y.applyUpdate(docA, base64ToBytes(String(offlineFromB["update"])));
+
+      const expectedOfflineMerged = `Live ${expectedMerged}Gamma (from MCP)\nOffline line`;
+      expect(textA.toString()).toBe(expectedOfflineMerged);
+      expect(textB.toString()).toBe(expectedOfflineMerged);
+      expect(app.notes.get(note.id)?.content).toBe(expectedOfflineMerged);
+
+      awareA.destroy();
+      awareB.destroy();
+      peerAOnly.destroy();
+      peerA.ws.close();
+      peerB2.ws.close();
+      docA.destroy();
+      docB.destroy();
     } finally {
       server.stop(true);
       app.close();

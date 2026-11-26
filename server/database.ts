@@ -59,6 +59,9 @@ const MIGRATIONS: readonly string[] = [
     created_at INTEGER NOT NULL
   );
   `,
+  `
+  ALTER TABLE notes ADD COLUMN yjs_state BLOB;
+  `,
 ];
 
 export function openDatabase(path: string): Database {

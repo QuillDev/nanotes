@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::{notes_root, relative_note_path, resolve_note_path, sanitize_filename, unique_note_path};
 
 const SYNC_STATE_FILE: &str = ".nanotes-sync.json";
+const YJS_STATE_DIR: &str = ".nanotes-yjs";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,6 +114,7 @@ pub struct SyncResult {
     pub rev: i64,
     pub pinned_paths: Vec<String>,
     pub active_note_path: Option<String>,
+    pub active_note_id: Option<String>,
     pub active_note_changed: bool,
 }
 
@@ -135,6 +137,89 @@ fn normalize_server_url(raw: &str) -> Result<String, String> {
 
 fn sync_state_path(root: &Path) -> PathBuf {
     root.join(SYNC_STATE_FILE)
+}
+
+fn yjs_state_path(root: &Path, note_id: &str) -> Result<PathBuf, String> {
+    let trimmed = note_id.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.starts_with('.')
+    {
+        return Err("invalid note id".to_string());
+    }
+    Ok(root.join(YJS_STATE_DIR).join(format!("{trimmed}.bin")))
+}
+
+fn load_existing_sync_state(root: &Path) -> Option<LocalSyncState> {
+    fs::read_to_string(sync_state_path(root))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<LocalSyncState>(&raw).ok())
+}
+
+pub fn note_id_for_path(notes_dir: &str, note_path: &str) -> Result<Option<String>, String> {
+    let trimmed = note_path.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let root = notes_root(notes_dir)?;
+    let Some(state) = load_existing_sync_state(&root) else {
+        return Ok(None);
+    };
+    for (id, tracked) in state.notes {
+        if !tracked.deleted && tracked.path == trimmed {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+pub fn read_yjs_state_hex(notes_dir: &str, note_id: &str) -> Result<Option<String>, String> {
+    let root = notes_root(notes_dir)?;
+    let path = yjs_state_path(&root, note_id)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+    Ok(Some(hex::encode(bytes)))
+}
+
+pub fn write_yjs_state_hex(notes_dir: &str, note_id: &str, state_hex: &str) -> Result<(), String> {
+    let root = notes_root(notes_dir)?;
+    let path = yjs_state_path(&root, note_id)?;
+    let bytes = hex::decode(state_hex.trim()).map_err(|error| error.to_string())?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let tmp = path.with_extension("bin.tmp");
+    fs::write(&tmp, bytes).map_err(|error| error.to_string())?;
+    fs::rename(&tmp, &path).map_err(|error| error.to_string())
+}
+
+pub fn mark_note_synced(
+    notes_dir: &str,
+    note_id: &str,
+    path: &str,
+    rev: i64,
+    content: &str,
+) -> Result<(), String> {
+    let root = notes_root(notes_dir)?;
+    let Some(mut state) = load_existing_sync_state(&root) else {
+        return Ok(());
+    };
+    let hash = sha256_hex(content);
+    let entry = state.notes.entry(note_id.to_string()).or_default();
+    if !path.trim().is_empty() {
+        entry.path = path.to_string();
+        entry.synced_path = path.to_string();
+    }
+    if rev > entry.rev {
+        entry.rev = rev;
+    }
+    entry.content_hash = hash;
+    entry.deleted = false;
+    save_sync_state(&root, &state)
 }
 
 fn load_sync_state(root: &Path, server_url: &str) -> LocalSyncState {
@@ -257,6 +342,7 @@ async fn pull_changes(
     state: &mut LocalSyncState,
     pinned_set: &mut HashSet<String>,
     active_path: &mut Option<String>,
+    live_note_id: Option<&str>,
 ) -> Result<(usize, usize, bool), String> {
     let url = format!("{server_url}/api/sync/changes?since={}", state.cursor);
     let resp = client
@@ -278,6 +364,9 @@ async fn pull_changes(
         let tracked = state.notes.get(&remote.id).cloned();
 
         if remote.deleted_at.is_some() {
+            if let Ok(yjs_path) = yjs_state_path(root, &remote.id) {
+                let _ = fs::remove_file(yjs_path);
+            }
             if let Some(prev) = tracked {
                 if !prev.deleted {
                     let prev_file = root.join(&prev.path);
@@ -308,6 +397,32 @@ async fn pull_changes(
                     content_hash: remote.content_hash,
                     pinned: false,
                     deleted: true,
+                },
+            );
+            continue;
+        }
+
+        // If this note is actively open in a live Yjs WebSocket session, Yjs owns its
+        // content merging and local disk mirroring; only reconcile pin/rev metadata here.
+        if live_note_id == Some(remote.id.as_str()) {
+            let local_path = tracked
+                .as_ref()
+                .map(|prev| prev.path.clone())
+                .unwrap_or_else(|| remote.path.clone());
+            if remote.pinned {
+                pinned_set.insert(local_path.clone());
+            } else {
+                pinned_set.remove(&local_path);
+            }
+            state.notes.insert(
+                remote.id,
+                TrackedNote {
+                    synced_path: remote.path,
+                    path: local_path,
+                    rev: remote.rev,
+                    content_hash: remote.content_hash,
+                    pinned: remote.pinned,
+                    deleted: false,
                 },
             );
             continue;
@@ -462,6 +577,7 @@ pub async fn sync_notes(
     sync_token: &str,
     pinned_paths: Vec<String>,
     active_note_path: Option<String>,
+    live_note_id: Option<String>,
 ) -> Result<SyncResult, String> {
     let base = normalize_server_url(server_url)?;
     let token = sync_token.trim();
@@ -474,9 +590,19 @@ pub async fn sync_notes(
     let mut state = load_sync_state(&root, &base);
     let mut pinned_set: HashSet<String> = pinned_paths.into_iter().collect();
     let mut active_path = active_note_path;
+    let live_id_ref = live_note_id.as_deref();
 
-    let (mut pulled, mut conflicts, mut active_changed) =
-        pull_changes(&client, &base, token, &root, &mut state, &mut pinned_set, &mut active_path).await?;
+    let (mut pulled, mut conflicts, mut active_changed) = pull_changes(
+        &client,
+        &base,
+        token,
+        &root,
+        &mut state,
+        &mut pinned_set,
+        &mut active_path,
+        live_id_ref,
+    )
+    .await?;
 
     let mut pushed = 0usize;
 
@@ -491,22 +617,36 @@ pub async fn sync_notes(
                 continue;
             }
             tracked_paths.insert(tracked.path.clone(), id.clone());
+            let is_live = live_id_ref == Some(id.as_str());
             match local_files.get(&tracked.path) {
                 None => {
-                    ops.push(PushOp {
-                        id: id.clone(),
-                        base_rev: tracked.rev,
-                        path: Some(tracked.path.clone()),
-                        content: None,
-                        pinned: None,
-                        deleted: Some(true),
-                    });
+                    if !is_live {
+                        ops.push(PushOp {
+                            id: id.clone(),
+                            base_rev: tracked.rev,
+                            path: Some(tracked.path.clone()),
+                            content: None,
+                            pinned: None,
+                            deleted: Some(true),
+                        });
+                    }
                 }
                 Some(content) => {
                     let hash = sha256_hex(content);
                     let pinned = pinned_set.contains(&tracked.path);
                     let renamed = !tracked.synced_path.is_empty() && tracked.synced_path != tracked.path;
-                    if hash != tracked.content_hash || pinned != tracked.pinned || renamed {
+                    if is_live {
+                        if pinned != tracked.pinned {
+                            ops.push(PushOp {
+                                id: id.clone(),
+                                base_rev: tracked.rev,
+                                path: None,
+                                content: None,
+                                pinned: Some(pinned),
+                                deleted: None,
+                            });
+                        }
+                    } else if hash != tracked.content_hash || pinned != tracked.pinned || renamed {
                         ops.push(PushOp {
                             id: id.clone(),
                             base_rev: tracked.rev,
@@ -590,8 +730,17 @@ pub async fn sync_notes(
         }
 
         if had_conflict && attempt == 0 {
-            let (p, c, ac) =
-                pull_changes(&client, &base, token, &root, &mut state, &mut pinned_set, &mut active_path).await?;
+            let (p, c, ac) = pull_changes(
+                &client,
+                &base,
+                token,
+                &root,
+                &mut state,
+                &mut pinned_set,
+                &mut active_path,
+                live_id_ref,
+            )
+            .await?;
             pulled += p;
             conflicts += c;
             active_changed = active_changed || ac;
@@ -606,6 +755,14 @@ pub async fn sync_notes(
     let mut final_pinned: Vec<String> = pinned_set.into_iter().collect();
     final_pinned.sort();
 
+    let active_note_id = active_path.as_deref().and_then(|target| {
+        state
+            .notes
+            .iter()
+            .find(|(_, tracked)| !tracked.deleted && tracked.path == target)
+            .map(|(id, _)| id.clone())
+    });
+
     Ok(SyncResult {
         pulled,
         pushed,
@@ -613,6 +770,7 @@ pub async fn sync_notes(
         rev: state.cursor,
         pinned_paths: final_pinned,
         active_note_path: active_path,
+        active_note_id,
         active_note_changed: active_changed,
     })
 }
@@ -673,5 +831,47 @@ mod tests {
     fn http_client_initializes_tls_provider_cleanly() {
         let client = http_client();
         assert!(client.is_ok());
+    }
+
+    #[test]
+    fn yjs_state_round_trips_and_rejects_path_traversal() {
+        let root = temp_dir("yjs");
+        let dir = root.to_string_lossy().to_string();
+
+        assert_eq!(read_yjs_state_hex(&dir, "note-123").unwrap(), None);
+        write_yjs_state_hex(&dir, "note-123", "deadbeef0102").unwrap();
+        assert_eq!(
+            read_yjs_state_hex(&dir, "note-123").unwrap().as_deref(),
+            Some("deadbeef0102")
+        );
+
+        assert!(write_yjs_state_hex(&dir, "../escape", "00").is_err());
+        assert!(read_yjs_state_hex(&dir, ".hidden").is_err());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mark_note_synced_and_lookup_keep_note_id_aligned() {
+        let root = temp_dir("mark-synced");
+        let dir = root.to_string_lossy().to_string();
+        let state = LocalSyncState {
+            server_url: "https://notes.example.com".to_string(),
+            cursor: 1,
+            notes: HashMap::new(),
+        };
+        save_sync_state(&root, &state).unwrap();
+
+        mark_note_synced(&dir, "id-live", "Live Note.md", 4, "# Live Note\n\nHi").unwrap();
+        assert_eq!(
+            note_id_for_path(&dir, "Live Note.md").unwrap().as_deref(),
+            Some("id-live")
+        );
+        let reloaded = load_sync_state(&root, "https://notes.example.com");
+        let entry = reloaded.notes.get("id-live").unwrap();
+        assert_eq!(entry.rev, 4);
+        assert_eq!(entry.content_hash, sha256_hex("# Live Note\n\nHi"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

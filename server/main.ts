@@ -22,7 +22,17 @@ const app = createApp({
 const server = Bun.serve({
   hostname: env("NANOTES_HOST") ?? "127.0.0.1",
   port: Number(env("NANOTES_PORT") ?? 8098),
-  fetch: app.fetch,
+  fetch: (req, srv) => app.fetch(req, srv),
+  websocket: app.websocket,
 });
+
+function shutdown() {
+  server.stop();
+  app.close();
+  process.exit(0);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 
 console.log(`nanotes sync server listening on ${server.url}`);
