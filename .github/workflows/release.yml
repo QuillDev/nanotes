@@ -123,6 +123,9 @@ jobs:
       - name: Package macOS release asset
         if: startsWith(matrix.name, 'macos-')
         shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: |
           mkdir -p release-assets
           APP_DIR="src-tauri/target/${{ matrix.target }}/release/bundle/macos"
@@ -131,18 +134,32 @@ jobs:
           codesign --force --deep --sign - "$APP_PATH"
           ASSET="release-assets/NaNotes_${APP_VERSION}_${{ matrix.arch_label }}.app.tar.gz"
           tar -czf "$ASSET" -C "$APP_DIR" NaNotes.app
-          ls -lh "$ASSET"
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            bunx tauri signer sign "$ASSET"
+            test -s "${ASSET}.sig"
+          fi
+          ls -lh release-assets
 
       - name: Package Windows release asset
         if: matrix.name == 'windows-x64'
         shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: |
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
           $installer = Get-ChildItem -Path "src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Filter '*-setup.exe' | Select-Object -First 1
           if (-not $installer) {
             throw 'Expected NSIS *-setup.exe installer was not produced.'
           }
-          Copy-Item -LiteralPath $installer.FullName -Destination release-assets/
+          $dest = Join-Path "release-assets" $installer.Name
+          Copy-Item -LiteralPath $installer.FullName -Destination $dest
+          if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+            bunx tauri signer sign $dest
+            if (-not (Test-Path "$dest.sig")) {
+              throw "Expected updater signature $dest.sig was not produced."
+            }
+          }
           Get-ChildItem release-assets
           if (Test-Path "$PWD\install.ps1") {
             $script = Get-Content -Raw -Path "$PWD\install.ps1"
@@ -200,17 +217,60 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Generate checksums and publish GitHub Release
+      - name: Generate updater manifest, checksums, and publish GitHub Release
         id: release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
         run: |
-          (cd release-assets && sha256sum * > SHA256SUMS.txt)
+          VERSION="${RELEASE_TAG#v}"
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+
+          python3 - "$VERSION" "$RELEASE_TAG" "$BASE_URL" <<'PY'
+          import datetime, glob, json, os, sys
+
+          version, tag, base_url = sys.argv[1:4]
+          patterns = {
+              "darwin-aarch64": "release-assets/*_aarch64.app.tar.gz",
+              "darwin-x86_64": "release-assets/*_x64.app.tar.gz",
+              "windows-x86_64": "release-assets/*-setup.exe",
+          }
+          platforms = {}
+          for key, pattern in patterns.items():
+              matches = sorted(glob.glob(pattern))
+              if not matches:
+                  continue
+              asset = matches[0]
+              sig_path = asset + ".sig"
+              if not os.path.isfile(sig_path):
+                  continue
+              with open(sig_path, "r", encoding="utf-8") as fh:
+                  sig = fh.read().strip()
+              if sig:
+                  platforms[key] = {
+                      "signature": sig,
+                      "url": f"{base_url}/{os.path.basename(asset)}",
+                  }
+
+          if platforms:
+              manifest = {
+                  "version": version,
+                  "notes": f"See https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/tag/{tag}",
+                  "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "platforms": platforms,
+              }
+              with open("release-assets/latest.json", "w", encoding="utf-8") as fh:
+                  json.dump(manifest, fh, indent=2)
+                  fh.write("\n")
+              print(f"Generated release-assets/latest.json with platforms: {sorted(platforms)}")
+          else:
+              print("No updater .sig files found; skipping latest.json generation.")
+          PY
+
+          (cd release-assets && sha256sum *.tar.gz *.exe *.deb > SHA256SUMS.txt)
           cat release-assets/SHA256SUMS.txt
 
-          VERSION="${RELEASE_TAG#v}"
           if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "NaNotes $VERSION" --generate-notes
           fi

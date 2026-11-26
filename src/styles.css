@@ -267,6 +267,10 @@ input {
   color: var(--pink-bright);
 }
 
+.topbarButton-update {
+  color: var(--pink-bright);
+}
+
 .title {
   min-width: 0;
   display: grid;
@@ -608,6 +612,11 @@ input:focus {
   color: var(--text);
   font-size: 13px;
   font-weight: 650;
+}
+
+.settingMeta {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .settingsFold {

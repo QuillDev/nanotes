@@ -17,9 +17,12 @@ import type { DecorationSet } from '@codemirror/view';
 import { Decoration, drawSelection, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
 import { acceptCompletion, autocompletion, startCompletion, type Completion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
 import { tags } from '@lezer/highlight';
+import { getVersion } from '@tauri-apps/api/app';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { homeDir } from '@tauri-apps/api/path';
 import { openPath, openUrl } from '@tauri-apps/plugin-opener';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { check as checkUpdate, type Update } from '@tauri-apps/plugin-updater';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
 import { morphClose, morphOpen, syncMorphHeight, useMorphHeight } from './morph';
@@ -1996,6 +1999,14 @@ function App() {
   const [recordingHotkey, setRecordingHotkey] = React.useState(false);
   const [launchAtLogin, setLaunchAtLogin] = React.useState(false);
   const [launchAtLoginReady, setLaunchAtLoginReady] = React.useState(!IS_TAURI);
+  const [appVersion, setAppVersion] = React.useState<string | null>(null);
+  const [updateState, setUpdateState] = React.useState<
+    'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'error'
+  >('idle');
+  const [availableVersion, setAvailableVersion] = React.useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = React.useState<number | null>(null);
+  const [updateError, setUpdateError] = React.useState<string | null>(null);
+  const availableUpdateRef = React.useRef<Update | null>(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState('');
   const [notes, setNotes] = React.useState<NoteEntry[]>([]);
@@ -2260,6 +2271,130 @@ function App() {
         setState(prev => ({ ...prev, status: 'error', message: String(error) }));
       });
   }, [launchAtLogin, launchAtLoginReady]);
+
+  const supportsInAppUpdater = IS_TAURI && (IS_MAC || IS_WINDOWS);
+
+  const replaceAvailableUpdate = React.useCallback((next: Update | null) => {
+    const previous = availableUpdateRef.current;
+    availableUpdateRef.current = next;
+    if (previous && previous !== next) {
+      void previous.close().catch(() => undefined);
+    }
+  }, []);
+
+  const checkForUpdates = React.useCallback(
+    async (manual: boolean) => {
+      if (!supportsInAppUpdater) {
+        if (manual && IS_TAURI) {
+          void openUrl('https://github.com/QuillDev/nanotes/releases/latest').catch(() => undefined);
+        }
+        return;
+      }
+
+      if (manual) {
+        setUpdateState('checking');
+        setUpdateError(null);
+      }
+
+      try {
+        const update = await checkUpdate();
+        if (update) {
+          replaceAvailableUpdate(update);
+          setAvailableVersion(update.version);
+          setUpdateError(null);
+          setUpdateState('available');
+        } else {
+          replaceAvailableUpdate(null);
+          setAvailableVersion(null);
+          setUpdateError(null);
+          if (manual) {
+            setUpdateState('up-to-date');
+          }
+        }
+      } catch (error: unknown) {
+        if (manual) {
+          setUpdateError(error instanceof Error ? error.message : String(error));
+          setUpdateState('error');
+        }
+      }
+    },
+    [replaceAvailableUpdate, supportsInAppUpdater],
+  );
+
+  const installUpdate = React.useCallback(async () => {
+    const update = availableUpdateRef.current;
+    if (!update || !supportsInAppUpdater) {
+      return;
+    }
+
+    setUpdateState('downloading');
+    setDownloadProgress(null);
+    setUpdateError(null);
+
+    try {
+      const current = stateRef.current;
+      if (current.content !== current.savedContent) {
+        await invoke<NoteSaveResult>('write_note', {
+          notesDir: current.notesDir,
+          notePath: current.notePath,
+          content: current.content,
+        }).catch(() => undefined);
+      }
+
+      let downloaded = 0;
+      let total = 0;
+      await update.downloadAndInstall(event => {
+        if (event.event === 'Started') {
+          total = event.data.contentLength ?? 0;
+          setDownloadProgress(total > 0 ? 0 : null);
+        } else if (event.event === 'Progress') {
+          downloaded += event.data.chunkLength;
+          if (total > 0) {
+            setDownloadProgress(Math.min(100, Math.round((downloaded / total) * 100)));
+          }
+        } else if (event.event === 'Finished') {
+          setDownloadProgress(100);
+        }
+      });
+
+      replaceAvailableUpdate(null);
+      await relaunch();
+    } catch (error: unknown) {
+      setUpdateError(error instanceof Error ? error.message : String(error));
+      setUpdateState('error');
+    }
+  }, [replaceAvailableUpdate, supportsInAppUpdater]);
+
+  React.useEffect(() => {
+    if (!IS_TAURI) {
+      return;
+    }
+
+    let cancelled = false;
+    void getVersion()
+      .then(version => {
+        if (!cancelled) {
+          setAppVersion(version);
+        }
+      })
+      .catch(() => undefined);
+
+    const timer = supportsInAppUpdater
+      ? window.setTimeout(() => {
+          if (!cancelled) {
+            void checkForUpdates(false);
+          }
+        }, 3000)
+      : null;
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+      replaceAvailableUpdate(null);
+    };
+  }, [checkForUpdates, replaceAvailableUpdate, supportsInAppUpdater]);
 
   // Register the chosen hotkey with the backend whenever it changes. Native
   // persistence is handled by the app-config effect below.
@@ -2612,6 +2747,21 @@ function App() {
           ) : null}
         </div>
         <div className="topbarActions">
+          {updateState === 'available' && availableVersion ? (
+            <button
+              className="topbarButton topbarButton-update"
+              type="button"
+              aria-label={`Update available (${availableVersion})`}
+              title={`Update to v${availableVersion}`}
+              onClick={() => setSettingsOpen(true)}
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3v12" />
+                <path d="m7 10 5 5 5-5" />
+                <path d="M5 20h14" />
+              </svg>
+            </button>
+          ) : null}
           <button
             className="topbarButton"
             type="button"
@@ -2755,6 +2905,48 @@ function App() {
                 <span className="switchKnob" />
               </button>
             </div>
+
+            {IS_TAURI ? (
+              <div className="settingRow">
+                <strong>
+                  Updates
+                  {appVersion ? <span className="settingMeta"> v{appVersion}</span> : null}
+                </strong>
+                <button
+                  className={
+                    updateState === 'available'
+                      ? 'hotkeyButton hotkeyButton-recording'
+                      : 'hotkeyButton'
+                  }
+                  type="button"
+                  disabled={updateState === 'checking' || updateState === 'downloading'}
+                  title={updateState === 'error' ? (updateError ?? 'Update check failed') : undefined}
+                  onClick={() => {
+                    if (updateState === 'available') {
+                      void installUpdate();
+                    } else {
+                      void checkForUpdates(true);
+                    }
+                  }}
+                >
+                  {!supportsInAppUpdater
+                    ? 'Releases'
+                    : updateState === 'checking'
+                      ? 'Checking…'
+                      : updateState === 'up-to-date'
+                        ? 'Up to date'
+                        : updateState === 'available' && availableVersion
+                          ? `Install v${availableVersion}`
+                          : updateState === 'downloading'
+                            ? downloadProgress !== null
+                              ? `Updating ${downloadProgress}%`
+                              : 'Updating…'
+                            : updateState === 'error'
+                              ? 'Retry'
+                              : 'Check'}
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

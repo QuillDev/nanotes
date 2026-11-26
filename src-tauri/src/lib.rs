@@ -755,6 +755,10 @@ fn register_hotkey(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_autostart::Builder::new().build());
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build());
     #[cfg(not(target_os = "linux"))]
     let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
@@ -803,9 +807,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building NaNotes")
         .run(|app_handle, event| match event {
-            tauri::RunEvent::ExitRequested { api, .. } => {
-                api.prevent_exit();
-                hide_overlay(app_handle);
+            tauri::RunEvent::ExitRequested { api, code, .. } => {
+                if code.is_none() {
+                    api.prevent_exit();
+                    hide_overlay(app_handle);
+                }
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_overlay(app_handle),
