@@ -211,10 +211,10 @@ jobs:
           cat release-assets/SHA256SUMS.txt
 
           VERSION="${RELEASE_TAG#v}"
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "NaNotes $VERSION" --generate-notes
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "NaNotes $VERSION" --generate-notes
           fi
-          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          gh release upload "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
 
           ARM_SHA=$(awk '/_aarch64\.app\.tar\.gz$/ { print $1 }' release-assets/SHA256SUMS.txt)
           X64_SHA=$(awk '/_x64\.app\.tar\.gz$/ { print $1 }' release-assets/SHA256SUMS.txt)
