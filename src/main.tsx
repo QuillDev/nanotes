@@ -63,7 +63,8 @@ interface HiddenRange {
 const DEFAULT_NOTES_DIR = '~/.nanotes';
 const DEFAULT_NOTE = 'Untitled.md';
 const SAVE_DELAY_MS = 500;
-const IS_LINUX = /Linux/i.test(navigator.userAgent);
+const IS_MAC = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
+const IS_WINDOWS = /Win/i.test(navigator.userAgent);
 // Matches the Rust DEFAULT_HOTKEY: Option/Alt + N. Stored in the plugin's
 // accelerator format ("alt+KeyN") so it round-trips straight to `set_hotkey`.
 const DEFAULT_HOTKEY = 'alt+KeyN';
@@ -104,18 +105,19 @@ function titleFromContent(content: string): string {
 }
 
 // Render an accelerator like "alt+KeyN" as platform-native UI text: "Alt+N" on
-// Linux and compact macOS glyphs like "⌥N" elsewhere.
+// Linux/Windows and compact macOS glyphs like "⌥N" on macOS.
 function formatHotkey(accelerator: string): string {
   const parts = accelerator
     .split('+')
     .map(part => {
       const normalized = part.toLowerCase();
-      if (IS_LINUX) {
-        const linuxLabels: Record<string, string> = {
-          super: 'Super',
-          cmd: 'Super',
-          command: 'Super',
-          meta: 'Super',
+      if (!IS_MAC) {
+        const superLabel = IS_WINDOWS ? 'Win' : 'Super';
+        const nonMacLabels: Record<string, string> = {
+          super: superLabel,
+          cmd: superLabel,
+          command: superLabel,
+          meta: superLabel,
           commandorcontrol: 'Ctrl',
           cmdorctrl: 'Ctrl',
           control: 'Ctrl',
@@ -124,9 +126,9 @@ function formatHotkey(accelerator: string): string {
           option: 'Alt',
           shift: 'Shift',
         };
-        const linuxLabel = linuxLabels[normalized];
-        if (linuxLabel) {
-          return linuxLabel;
+        const nonMacLabel = nonMacLabels[normalized];
+        if (nonMacLabel) {
+          return nonMacLabel;
         }
       }
       const symbol = HOTKEY_SYMBOLS[normalized];
@@ -143,10 +145,10 @@ function formatHotkey(accelerator: string): string {
       }
       return part;
     });
-  return parts.join(IS_LINUX ? '+' : '');
+  return parts.join(IS_MAC ? '' : '+');
 }
 function appShortcutLabel(key: string): string {
-  return `${IS_LINUX ? 'Ctrl+' : '⌘'}${key}`;
+  return `${IS_MAC ? '⌘' : 'Ctrl+'}${key}`;
 }
 
 function glassBackground(tint: string, opacity: number): string {
@@ -2432,9 +2434,9 @@ function App() {
 
   React.useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      const isAppShortcut = IS_LINUX
-        ? event.ctrlKey && !event.metaKey && !event.altKey
-        : event.metaKey && !event.ctrlKey && !event.altKey;
+      const isAppShortcut = IS_MAC
+        ? event.metaKey && !event.ctrlKey && !event.altKey
+        : event.ctrlKey && !event.metaKey && !event.altKey;
 
       if (event.key === 'Escape') {
         event.preventDefault();

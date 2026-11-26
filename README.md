@@ -26,34 +26,47 @@ Press <kbd>⌥</kbd>+<kbd>N</kbd> on macOS or <kbd>Alt</kbd>+<kbd>N</kbd> on Lin
 
 ## Requirements
 
-- macOS (Apple Silicon or Intel) with Xcode Command Line Tools — `xcode-select --install`
-- NixOS / Linux with a desktop session that can run Tauri/WebKitGTK apps
+- macOS (Apple Silicon or Intel)
+- Windows 10 or 11 (x64)
+- Linux (x86_64) or NixOS with a desktop session that can run Tauri/WebKitGTK apps
 
 ## Install
 
-### Homebrew (recommended on macOS)
-
-NaNotes is distributed as a build-from-source Homebrew formula, so the install compiles it locally (Homebrew pulls in the Rust and Node build tools for you).
+### macOS (Homebrew)
 
 ```bash
 brew install quilldev/tap/nanotes
 ```
 
-The build takes a few minutes the first time. When it finishes, launch NaNotes from Spotlight/Launchpad, or add it to your Applications folder:
-
-```bash
-ln -sf "$(brew --prefix)/opt/nanotes/NaNotes.app" /Applications/NaNotes.app
-```
-
-To update later:
+Release builds ship as a prebuilt Homebrew cask that installs `NaNotes.app` directly into `/Applications` and clears macOS quarantine on install (since the app is ad-hoc signed without an Apple Developer certificate). To update later:
 
 ```bash
 brew upgrade nanotes
 ```
 
-### Nix / NixOS
+### Windows
 
-NaNotes ships a flake package for Linux:
+Install with WinGet (built into Windows 10 and 11):
+
+```powershell
+winget install QuillDev.nanotes
+```
+
+Or run the PowerShell one-liner to install the latest GitHub Release directly:
+
+```powershell
+irm https://raw.githubusercontent.com/QuillDev/nanotes/main/install.ps1 | iex
+```
+
+### Linux
+
+Run the curl one-liner to install the latest GitHub Release into `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/QuillDev/nanotes/main/install.sh | sh
+```
+
+Or on Nix / NixOS via the flake:
 
 ```bash
 nix run github:QuillDev/nanotes
@@ -76,7 +89,7 @@ The bundled app is written to `src-tauri/target/release/bundle/macos/NaNotes.app
 
 ## Usage
 
-| macOS shortcut | Linux shortcut | Action |
+| macOS shortcut | Linux / Windows shortcut | Action |
 | --- | --- | --- |
 | <kbd>⌥</kbd>+<kbd>N</kbd> | <kbd>Alt</kbd>+<kbd>N</kbd> | Show / hide the overlay (works from any app; rebindable in settings) |
 | <kbd>⌘</kbd>+<kbd>P</kbd> | <kbd>Ctrl</kbd>+<kbd>P</kbd> | Fuzzy-search notes |
