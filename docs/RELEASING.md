@@ -1,63 +1,43 @@
 # Releasing NaNotes
 
-NaNotes ships as a build-from-source Homebrew formula. Users run
-`brew install quilldev/tap/nanotes`, which compiles the app locally. To make that
-command work you need two public GitHub repositories:
-
-1. **`QuillDev/nanotes`** — this source repository (provides the release tarball).
-2. **`QuillDev/homebrew-tap`** — the Homebrew tap that hosts the formula.
-
-The canonical formula lives in this repo at [`Formula/nanotes.rb`](../Formula/nanotes.rb);
-the tap repo holds a copy of it.
+NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Windows (x64), and Linux (x86_64) in parallel via `.github/workflows/release.yml`. The workflow only runs when cutting a release (`v*` tag push or manual `workflow_dispatch`), keeping pull requests fast.
 
 ## Cutting a release
 
-1. Bump the version in `package.json`, `src-tauri/Cargo.toml`, and
-   `src-tauri/tauri.conf.json`, then commit.
+1. Bump the version in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `nix/package.nix`, then commit and merge to `main`.
 
-2. Tag and push the source repo:
+2. Tag and push:
 
    ```bash
-   git tag v0.1.0
+   git tag v0.3.5
    git push origin main --tags
    ```
 
-3. Get the checksum of the GitHub-generated source tarball and update the formula:
+   You can also attach release builds to an existing tag from the GitHub Actions UI via **Release -> Run workflow** with the tag name (or leave the tag blank for a build-only check).
 
-   ```bash
-   curl -sL https://github.com/QuillDev/nanotes/archive/refs/tags/v0.1.0.tar.gz \
-     | shasum -a 256
-   ```
+3. The `Release` workflow builds all four targets in parallel and uploads the assets plus `SHA256SUMS.txt` to the GitHub Release:
+   - macOS Apple Silicon: `NaNotes_<version>_aarch64.app.tar.gz` (ad-hoc signed)
+   - macOS Intel: `NaNotes_<version>_x64.app.tar.gz` (ad-hoc signed)
+   - Windows x64: `NaNotes_<version>_x64-setup.exe` (NSIS installer)
+   - Linux x86_64: `nanotes_<version>_linux_x86_64.tar.gz` (used by `install.sh`) and `.deb`
 
-   Put that value in `Formula/nanotes.rb` (replacing the placeholder `sha256`),
-   and make sure `url` points at the new tag.
+## Automatic package manager updates
 
-4. Verify the formula builds and passes audit before publishing:
+The `publish` job automatically updates downstream package managers when the corresponding repository secrets are configured in `QuillDev/nanotes` (and skips cleanly without failing the release when they are not):
 
-   ```bash
-   brew audit --formula ./Formula/nanotes.rb
-   brew install --build-from-source ./Formula/nanotes.rb
-   ```
+### Homebrew tap (`QuillDev/homebrew-tap`)
 
-## Publishing the tap (first time)
+Add a GitHub PAT with write access to `QuillDev/homebrew-tap` as the `HOMEBREW_TAP_TOKEN` Actions secret. On every release, the workflow updates `Casks/nanotes.rb` with the new version and macOS arm64/x64 SHA256 checksums (and removes the legacy source `Formula/nanotes.rb` if present). Without the secret, the workflow prints the generated `Casks/nanotes.rb` in the run summary for manual copying.
 
-```bash
-# Create the tap repo with the standard layout.
-brew tap-new QuillDev/tap
-cp Formula/nanotes.rb "$(brew --repository QuillDev/tap)/Formula/nanotes.rb"
+### WinGet (`microsoft/winget-pkgs`)
 
-# Push it to github.com/QuillDev/homebrew-tap (the repo must be named
-# "homebrew-tap" so `brew install QuillDev/tap/...` resolves it).
-cd "$(brew --repository QuillDev/tap)"
-gh repo create QuillDev/homebrew-tap --public --source=. --push
-```
-
-On later releases, just copy the updated `Formula/nanotes.rb` into the tap repo
-and push.
-
-## Verifying a published install
+`winget-releaser` updates existing packages in `microsoft/winget-pkgs`, so the very first version needs a one-time submission after a GitHub Release has the Windows installer attached:
 
 ```bash
-brew untap quilldev/tap 2>/dev/null || true   # drop any local copy
-brew install quilldev/tap/nanotes
+komac new QuillDev.nanotes \
+  --version <version> \
+  --urls https://github.com/QuillDev/nanotes/releases/download/v<version>/NaNotes_<version>_x64-setup.exe \
+  --submit
 ```
+
+To automate future WinGet updates on every `v*` release tag, fork `microsoft/winget-pkgs` under `QuillDev` and add a GitHub PAT with `public_repo` scope as the `WINGET_TOKEN` Actions secret in `QuillDev/nanotes`.

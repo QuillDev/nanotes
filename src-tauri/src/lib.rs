@@ -118,13 +118,40 @@ impl AsRef<str> for NoteCandidate {
     }
 }
 
-fn expand_home(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
+fn user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()))
+        .map(PathBuf::from)
+}
+
+fn expand_home_with(path: &str, home: Option<&Path>) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = home {
+            return home.to_path_buf();
+        }
+    }
+    if let Some(rest) = path
+        .strip_prefix("~/")
+        .or_else(|| path.strip_prefix("~\\"))
+    {
+        if let Some(home) = home {
+            return home.join(rest);
         }
     }
     PathBuf::from(path)
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    expand_home_with(path, user_home_dir().as_deref())
+}
+
+fn has_windows_drive_prefix(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
 }
 
 fn notes_root(notes_dir: &str) -> Result<PathBuf, String> {
@@ -337,19 +364,27 @@ fn suggest_paths(input: String, filter: Option<PathFilter>) -> Result<Vec<PathSu
     // path. Anything else (a bare folder name, empty string) is left alone.
     let looks_like_path = input.starts_with('/')
         || input.starts_with("~/")
+        || input.starts_with("~\\")
         || input.starts_with("./")
-        || input.starts_with("../");
+        || input.starts_with(".\\")
+        || input.starts_with("../")
+        || input.starts_with("..\\")
+        || has_windows_drive_prefix(&input);
     if !looks_like_path {
         return Ok(Vec::new());
     }
 
     let filter = filter.unwrap_or_default();
 
-    // Split into the directory portion (through the last '/') and the fragment
-    // being typed after it. We complete entries of the directory that match the
-    // fragment as a case-insensitive prefix.
-    let split_at = input.rfind('/').map(|index| index + 1).unwrap_or(0);
+    // Split into the directory portion (through the last path separator) and the
+    // fragment being typed after it. We complete entries of the directory that
+    // match the fragment as a case-insensitive prefix.
+    let split_at = input
+        .rfind(['/', '\\'])
+        .map(|index| index + 1)
+        .unwrap_or(0);
     let (base, fragment) = input.split_at(split_at);
+    let dir_sep = if base.ends_with('\\') { '\\' } else { '/' };
     let scan_dir = expand_home(base);
 
     let fragment_lower = fragment.to_lowercase();
@@ -370,7 +405,7 @@ fn suggest_paths(input: String, filter: Option<PathFilter>) -> Result<Vec<PathSu
         }
         let mut value = format!("{base}{name}");
         if is_dir {
-            value.push('/');
+            value.push(dir_sep);
         }
         suggestions.push(PathSuggestion {
             value,
@@ -696,12 +731,11 @@ pub fn run() {
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
-            // Do not rely on the window config's initial visibility. Accessory apps
-            // have no Dock icon to recover from a failed or suppressed presentation.
-            // Linux compositors likewise may not deliver process-global shortcuts.
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            // Do not rely on the window config's initial visibility. Accessory/skipTaskbar
+            // apps have no Dock or taskbar icon to recover from a suppressed presentation.
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
             show_overlay(app.handle());
-            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
             configure_window(app.handle());
             if let Err(error) = register_hotkey(app.handle()) {
                 eprintln!("failed to register NaNotes global hotkey: {error}");
@@ -897,5 +931,23 @@ mod tests {
         assert!(results
             .iter()
             .all(|note| note.title.starts_with("Project Alpha")));
+    }
+
+    #[test]
+    fn expand_home_supports_tilde_slashes_and_windows_separators() {
+        let home = Path::new("/users/quill");
+        assert_eq!(
+            expand_home_with("~/.nanotes", Some(home)),
+            home.join(".nanotes")
+        );
+        assert_eq!(
+            expand_home_with("~\\.nanotes", Some(home)),
+            home.join(".nanotes")
+        );
+        assert_eq!(expand_home_with("~", Some(home)), home);
+        assert_eq!(
+            expand_home_with("~/.nanotes", None),
+            PathBuf::from("~/.nanotes")
+        );
     }
 }
