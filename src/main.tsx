@@ -1962,12 +1962,14 @@ function useDebouncedSave(
   state: NoteState,
   setState: React.Dispatch<React.SetStateAction<NoteState>>,
   noteGenRef: React.RefObject<number>,
+  fastNewNoteSave: boolean,
 ) {
   React.useEffect(() => {
     if (state.status === 'loading' || state.content === state.savedContent) {
       return;
     }
 
+    const delay = fastNewNoteSave && !state.notePath.trim() ? 150 : SAVE_DELAY_MS;
     const handle = window.setTimeout(() => {
       // Stamp the active note; if it changes (new note / opened another) before
       // this async save resolves, its result must not be applied to whatever note
@@ -2006,10 +2008,10 @@ function useDebouncedSave(
             message: String(error),
           }));
         });
-    }, SAVE_DELAY_MS);
+    }, delay);
 
     return () => window.clearTimeout(handle);
-  }, [state.content, state.notePath, state.savedContent, state.status, state.notesDir, setState, noteGenRef]);
+  }, [state.content, state.notePath, state.savedContent, state.status, state.notesDir, setState, noteGenRef, fastNewNoteSave]);
 }
 
 function CollabEditor({
@@ -2067,8 +2069,16 @@ function CollabEditor({
     if (pendingCursor?.focus) {
       view.focus();
     }
+    // y-codemirror.next starts with empty remote selection decorations until the
+    // first view update; nudge the view so peers already in the room appear at once.
+    const raf = requestAnimationFrame(() => {
+      if (session.awareness.getStates().size > 1) {
+        view.dispatch({});
+      }
+    });
 
     return () => {
+      cancelAnimationFrame(raf);
       view.destroy();
     };
   }, [baseExtensions, initialAnchorRef, session]);
@@ -2320,6 +2330,7 @@ function App() {
   const createNewNote = React.useCallback(() => {
     flushPendingSave();
     noteGenRef.current += 1;
+    const hadLiveSession = liveSessionRef.current !== null;
     setActiveNoteId(null);
     setLiveSession(null);
     setSearchOpen(false);
@@ -2328,8 +2339,10 @@ function App() {
     // independent of React re-rendering and the controlled-value sync (which
     // stalls when keystrokes/renders from rapid typing are still in flight —
     // that was the lag when creating a note right after typing).
+    // Never clear a live CollabEditor view in place: yCollab is still attached
+    // until React unmounts it, so clearing it would broadcast a wipe over Yjs.
     const view = editorViewRef.current;
-    if (view) {
+    if (view && !hadLiveSession) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: '' } });
       view.focus();
     }
@@ -2649,14 +2662,11 @@ function App() {
     if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
       return;
     }
-    const initial = window.setTimeout(() => {
-      void runSync();
-    }, 1000);
+    void runSync();
     const interval = window.setInterval(() => {
       void runSync();
     }, 15_000);
     return () => {
-      window.clearTimeout(initial);
       window.clearInterval(interval);
     };
   }, [appConfigReady, runSync, syncToken, syncUrl]);
@@ -2665,11 +2675,29 @@ function App() {
     if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
       return;
     }
+    // While a live Yjs room is active, WebSocket streams content edits in real time;
+    // avoid firing redundant HTTP syncs on every local disk flush.
+    if (liveSessionRef.current?.ready) {
+      return;
+    }
+    // Brand-new local notes have no server ID yet: sync immediately once saved so
+    // they join a live room without a 1.5s wait.
+    const delay = !activeNoteId && state.notePath.trim() ? 0 : 800;
     const timer = window.setTimeout(() => {
       void runSync();
-    }, 1500);
+    }, delay);
     return () => window.clearTimeout(timer);
-  }, [appConfigReady, pinnedPaths, runSync, state.savedContent, syncToken, syncUrl]);
+  }, [activeNoteId, appConfigReady, runSync, state.notePath, state.savedContent, syncToken, syncUrl]);
+
+  React.useEffect(() => {
+    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void runSync();
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [appConfigReady, pinnedPaths, runSync, syncToken, syncUrl]);
 
   // Persistent WebSocket live-collab connection for real-time CRDT editing and instant note events.
   React.useEffect(() => {
@@ -2690,7 +2718,7 @@ function App() {
       syncKickTimer = window.setTimeout(() => {
         syncKickTimer = null;
         void runSync();
-      }, 250);
+      }, 50);
     };
 
     const client = new CollabClient({
@@ -2725,12 +2753,13 @@ function App() {
   }, [appConfigReady, runSync, syncToken, syncUrl]);
 
   // Resolve the active note's server ID whenever the active file changes.
+  const isLoadingNote = state.status === 'loading';
   React.useEffect(() => {
     if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
       setActiveNoteId(null);
       return;
     }
-    if (state.status === 'loading' || !state.notePath.trim()) {
+    if (isLoadingNote || !state.notePath.trim()) {
       setActiveNoteId(null);
       return;
     }
@@ -2752,7 +2781,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [appConfigReady, state.notePath, state.notesDir, state.status, syncToken, syncUrl]);
+  }, [appConfigReady, isLoadingNote, state.notePath, state.notesDir, syncToken, syncUrl]);
 
   // Attach a live Yjs room for the active synced note and persist local CRDT state for offline merges.
   React.useEffect(() => {
@@ -2791,6 +2820,7 @@ function App() {
         session = client.openNote(activeNoteId, {
           savedYjsState: savedBytes,
           localContent: snapshot.content,
+          getLatestLocalContent: () => stateRef.current.content,
           localDirty: snapshot.content !== snapshot.savedContent,
           peerName,
           onReady: () => {
@@ -3078,7 +3108,7 @@ function App() {
     return () => window.removeEventListener('keydown', onKey, true);
   }, [createNewNote, openSearch, searchOpen, settingsOpen]);
 
-  useDebouncedSave(state, setState, noteGenRef);
+  useDebouncedSave(state, setState, noteGenRef, Boolean(syncUrl.trim() && syncToken.trim()));
 
   const filteredNotes = React.useMemo(() => {
     const pinnedSet = new Set(pinnedPaths);

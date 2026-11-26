@@ -12,7 +12,8 @@ import type { Auth } from "./auth.ts";
 import type { NotesStore, SyncedNote } from "./notes.ts";
 
 const AUTH_TIMEOUT_MS = 10_000;
-const FLUSH_DEBOUNCE_MS = 250;
+const FLUSH_DEBOUNCE_MS = 150;
+const FLUSH_MAX_WAIT_MS = 500;
 const MAX_UPDATE_BYTES = 5 * 1024 * 1024;
 const SERVER_DIFF_ORIGIN = Symbol("server-external-diff");
 
@@ -32,6 +33,7 @@ interface Room {
   clientAwarenessIds: Map<ServerWebSocket<WsClientData>, Set<number>>;
   dirty: boolean;
   flushTimer: ReturnType<typeof setTimeout> | null;
+  maxFlushTimer: ReturnType<typeof setTimeout> | null;
 }
 
 function sendJson(ws: ServerWebSocket<WsClientData>, payload: unknown): void {
@@ -231,6 +233,7 @@ export class CollabHub {
       clientAwarenessIds: new Map(),
       dirty: false,
       flushTimer: null,
+      maxFlushTimer: null,
     };
 
     awareness.on(
@@ -376,6 +379,13 @@ export class CollabHub {
       room.flushTimer = null;
       this.flushRoom(room);
     }, this.flushDebounceMs);
+    if (!room.maxFlushTimer) {
+      const maxWait = Math.max(this.flushDebounceMs, FLUSH_MAX_WAIT_MS);
+      room.maxFlushTimer = setTimeout(() => {
+        room.maxFlushTimer = null;
+        this.flushRoom(room);
+      }, maxWait);
+    }
   }
 
   flushNote(noteId?: string): void {
@@ -394,6 +404,10 @@ export class CollabHub {
       clearTimeout(room.flushTimer);
       room.flushTimer = null;
     }
+    if (room.maxFlushTimer) {
+      clearTimeout(room.maxFlushTimer);
+      room.maxFlushTimer = null;
+    }
     if (!room.dirty) return;
     room.dirty = false;
 
@@ -409,6 +423,10 @@ export class CollabHub {
     if (room.flushTimer) {
       clearTimeout(room.flushTimer);
       room.flushTimer = null;
+    }
+    if (room.maxFlushTimer) {
+      clearTimeout(room.maxFlushTimer);
+      room.maxFlushTimer = null;
     }
     room.awareness.destroy();
     room.doc.destroy();
@@ -451,6 +469,10 @@ export class CollabHub {
       if (activeRoom.flushTimer) {
         clearTimeout(activeRoom.flushTimer);
         activeRoom.flushTimer = null;
+      }
+      if (activeRoom.maxFlushTimer) {
+        clearTimeout(activeRoom.maxFlushTimer);
+        activeRoom.maxFlushTimer = null;
       }
       if (emittedUpdate) {
         const encoded = bytesToBase64(emittedUpdate);
