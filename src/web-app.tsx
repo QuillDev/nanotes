@@ -294,29 +294,34 @@ function WebApp() {
       setError("");
       setMessage("");
       const opts = await api<{
-        challenge: string;
-        rp: PublicKeyCredentialRpEntity;
-        user: { id: string; name: string; displayName: string };
-        pubKeyCredParams: PublicKeyCredentialParameters[];
-        excludeCredentials?: { id: string; type: PublicKeyCredentialType }[];
-        authenticatorSelection?: AuthenticatorSelectionCriteria;
-        timeout?: number;
-        attestation?: AttestationConveyancePreference;
-      } & { error?: string }>("/api/passkeys/register/options", {
+        challengeId: string;
+        publicKey: {
+          challenge: string;
+          rp: PublicKeyCredentialRpEntity;
+          user: { id: string; name: string; displayName: string };
+          pubKeyCredParams: PublicKeyCredentialParameters[];
+          excludeCredentials?: { id: string; type: PublicKeyCredentialType }[];
+          authenticatorSelection?: AuthenticatorSelectionCriteria;
+          timeout?: number;
+          attestation?: AttestationConveyancePreference;
+        };
+        error?: string;
+      }>("/api/passkeys/register/options", {
         method: "POST",
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ setup: token }),
       });
       if (!opts.ok) {
         setError(opts.data.error || "Invalid or expired link");
         return;
       }
       try {
+        const pk = opts.data.publicKey;
         const cred = (await navigator.credentials.create({
           publicKey: {
-            ...opts.data,
-            challenge: b64urlToBytes(opts.data.challenge),
-            user: { ...opts.data.user, id: b64urlToBytes(opts.data.user.id) },
-            excludeCredentials: (opts.data.excludeCredentials ?? []).map((item) => ({
+            ...pk,
+            challenge: b64urlToBytes(pk.challenge),
+            user: { ...pk.user, id: b64urlToBytes(pk.user.id) },
+            excludeCredentials: (pk.excludeCredentials ?? []).map((item) => ({
               ...item,
               id: b64urlToBytes(item.id),
             })),
@@ -327,10 +332,12 @@ function WebApp() {
         const finish = await api<{ error?: string }>("/api/passkeys/register", {
           method: "POST",
           body: JSON.stringify({
-            token,
-            id: cred.id,
-            clientDataJSON: bytesToB64url(response.clientDataJSON),
-            attestationObject: bytesToB64url(response.attestationObject),
+            challengeId: opts.data.challengeId,
+            credential: {
+              id: bytesToB64url(cred.rawId),
+              clientDataJSON: bytesToB64url(response.clientDataJSON),
+              attestationObject: bytesToB64url(response.attestationObject),
+            },
           }),
         });
         if (!finish.ok) {
@@ -350,11 +357,14 @@ function WebApp() {
   const signInPasskey = React.useCallback(async () => {
     setError("");
     const opts = await api<{
-      challenge: string;
-      rpId: string;
-      allowCredentials?: { id: string; type: PublicKeyCredentialType }[];
-      userVerification?: UserVerificationRequirement;
-      timeout?: number;
+      challengeId: string;
+      publicKey: {
+        challenge: string;
+        rpId: string;
+        allowCredentials?: { id: string; type: PublicKeyCredentialType }[];
+        userVerification?: UserVerificationRequirement;
+        timeout?: number;
+      };
       error?: string;
     }>("/api/passkeys/login/options", { method: "POST", body: "{}" });
     if (!opts.ok) {
@@ -362,11 +372,12 @@ function WebApp() {
       return;
     }
     try {
+      const pk = opts.data.publicKey;
       const cred = (await navigator.credentials.get({
         publicKey: {
-          ...opts.data,
-          challenge: b64urlToBytes(opts.data.challenge),
-          allowCredentials: (opts.data.allowCredentials ?? []).map((item) => ({
+          ...pk,
+          challenge: b64urlToBytes(pk.challenge),
+          allowCredentials: (pk.allowCredentials ?? []).map((item) => ({
             ...item,
             id: b64urlToBytes(item.id),
           })),
@@ -377,10 +388,13 @@ function WebApp() {
       const finish = await api<{ error?: string }>("/api/passkeys/login", {
         method: "POST",
         body: JSON.stringify({
-          id: cred.id,
-          clientDataJSON: bytesToB64url(response.clientDataJSON),
-          authenticatorData: bytesToB64url(response.authenticatorData),
-          signature: bytesToB64url(response.signature),
+          challengeId: opts.data.challengeId,
+          credential: {
+            id: bytesToB64url(cred.rawId),
+            clientDataJSON: bytesToB64url(response.clientDataJSON),
+            authenticatorData: bytesToB64url(response.authenticatorData),
+            signature: bytesToB64url(response.signature),
+          },
         }),
       });
       if (!finish.ok) {
@@ -667,7 +681,7 @@ function WebApp() {
               >
                 New sync token
               </button>
-              {methods.passkey ? (
+              {methods.passkeyConfigured ? (
                 <button
                   className="btn btn-ghost"
                   type="button"
