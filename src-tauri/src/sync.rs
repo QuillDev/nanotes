@@ -593,6 +593,48 @@ pub async fn poll_pairing(server_url: &str, poll_token: &str) -> Result<PairingP
         .map_err(|error| error.to_string())
 }
 
+#[derive(Deserialize)]
+struct RenameDevicePayload {
+    device: RenameDeviceInfo,
+}
+
+#[derive(Deserialize)]
+struct RenameDeviceInfo {
+    name: String,
+}
+
+pub async fn rename_device(
+    server_url: &str,
+    sync_token: &str,
+    device_name: &str,
+) -> Result<String, String> {
+    let base = normalize_server_url(server_url)?;
+    let token = sync_token.trim();
+    if token.is_empty() {
+        return Err("sync token is empty".to_string());
+    }
+    let clean_name: String = device_name.trim().chars().take(80).collect();
+    if clean_name.is_empty() {
+        return Err("device name is empty".to_string());
+    }
+    let client = http_client()?;
+    let resp = client
+        .patch(format!("{base}/api/device"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "name": clean_name }))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("could not rename device ({})", resp.status().as_u16()));
+    }
+    let payload = resp
+        .json::<RenameDevicePayload>()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(payload.device.name)
+}
+
 pub async fn sync_notes(
     notes_dir: &str,
     server_url: &str,

@@ -362,6 +362,31 @@ input:focus {
   border-top: 0;
 }
 
+.deviceField {
+  display: grid;
+  gap: 6px;
+}
+
+.deviceField input,
+.deviceEditForm input {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.deviceEditForm {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.deviceEditForm input {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
 /* CodeMirror theme tweaks + live remote cursors */
 .cm-editor {
   height: 100%;

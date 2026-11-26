@@ -193,6 +193,17 @@ function sortNotes(list: NoteSummary[]): NoteSummary[] {
   });
 }
 
+const CLIENT_NAME_STORAGE_KEY = "nanotes:clientName";
+const DEFAULT_CLIENT_NAME = /android|iphone|ipad/i.test(navigator.userAgent) ? "Mobile" : "Web";
+
+function readStoredClientName(): string {
+  try {
+    return window.localStorage.getItem(CLIENT_NAME_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function WebApp() {
   const [route, setRoute] = React.useState<Route>(parseRoute);
   const [methods, setMethods] = React.useState<LoginMethods>({
@@ -206,6 +217,11 @@ function WebApp() {
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState("");
   const [devices, setDevices] = React.useState<DeviceInfo[]>([]);
+  const [clientName, setClientName] = React.useState<string>(readStoredClientName);
+  const clientNameRef = React.useRef(clientName);
+  clientNameRef.current = clientName;
+  const [editingDeviceId, setEditingDeviceId] = React.useState<string | null>(null);
+  const [editingDeviceName, setEditingDeviceName] = React.useState("");
   const [newToken, setNewToken] = React.useState<string | null>(null);
   const [notes, setNotes] = React.useState<NoteSummary[]>([]);
   const [query, setQuery] = React.useState("");
@@ -298,9 +314,8 @@ function WebApp() {
     }
 
     let cancelled = false;
-    const isMobile = /android|iphone|ipad/i.test(navigator.userAgent);
     const session = client.openNote(activeNoteId, {
-      peerName: isMobile ? "Mobile" : "Web",
+      peerName: clientNameRef.current.trim() || DEFAULT_CLIENT_NAME,
       onReady: () => {
         if (!cancelled) setLiveSession(session);
       },
@@ -322,6 +337,20 @@ function WebApp() {
       session.destroy();
     };
   }, [activeNoteId, route.kind, showDevices, signedIn]);
+
+  React.useEffect(() => {
+    const trimmed = clientName.trim().slice(0, 80);
+    try {
+      if (trimmed) {
+        window.localStorage.setItem(CLIENT_NAME_STORAGE_KEY, trimmed);
+      } else {
+        window.localStorage.removeItem(CLIENT_NAME_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage failures in restricted browsing modes.
+    }
+    liveSession?.setPeerName(trimmed || DEFAULT_CLIENT_NAME);
+  }, [clientName, liveSession]);
 
   const registerPasskey = React.useCallback(
     async (token: string) => {
@@ -694,6 +723,16 @@ function WebApp() {
           <div className="devicesInner stack">
             {message ? <div className="ok">{message}</div> : null}
             {error ? <div className="error">{error}</div> : null}
+            <label className="deviceField">
+              <span className="muted">This browser</span>
+              <input
+                type="text"
+                maxLength={80}
+                placeholder={DEFAULT_CLIENT_NAME}
+                value={clientName}
+                onChange={(e) => setClientName(e.target.value)}
+              />
+            </label>
             <div className="actions">
               <button
                 className="btn"
@@ -747,24 +786,89 @@ function WebApp() {
               <div>
                 {devices.map((device) => (
                   <div className="deviceRow" key={device.id}>
-                    <div>
-                      <div>{device.name}</div>
-                      <div className="muted">
-                        {device.lastUsedAt
-                          ? `Last synced ${new Date(device.lastUsedAt).toLocaleString()}`
-                          : "Never synced"}
-                      </div>
-                    </div>
-                    <button
-                      className="btn btn-ghost"
-                      type="button"
-                      onClick={async () => {
-                        await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
-                        await loadSession();
-                      }}
-                    >
-                      Revoke
-                    </button>
+                    {editingDeviceId === device.id ? (
+                      <form
+                        className="deviceEditForm"
+                        onSubmit={async (e) => {
+                          e.preventDefault();
+                          const trimmed = editingDeviceName.trim();
+                          if (!trimmed) return;
+                          setError("");
+                          const res = await api<{ device?: DeviceInfo; error?: string }>(
+                            `/api/devices/${encodeURIComponent(device.id)}`,
+                            {
+                              method: "PATCH",
+                              body: JSON.stringify({ name: trimmed }),
+                            },
+                          );
+                          if (!res.ok) {
+                            setError(res.data.error || "Could not rename device");
+                            return;
+                          }
+                          if (res.data.device) {
+                            const updated = res.data.device;
+                            setDevices((prev) => prev.map((item) => (item.id === device.id ? updated : item)));
+                          }
+                          setEditingDeviceId(null);
+                        }}
+                      >
+                        <input
+                          type="text"
+                          maxLength={80}
+                          autoFocus
+                          value={editingDeviceName}
+                          onChange={(e) => setEditingDeviceName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") setEditingDeviceId(null);
+                          }}
+                        />
+                        <div className="actions">
+                          <button className="btn btn-primary" type="submit" disabled={!editingDeviceName.trim()}>
+                            Save
+                          </button>
+                          <button
+                            className="btn btn-ghost"
+                            type="button"
+                            onClick={() => setEditingDeviceId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <>
+                        <div>
+                          <div>{device.name}</div>
+                          <div className="muted">
+                            {device.lastUsedAt
+                              ? `Last synced ${new Date(device.lastUsedAt).toLocaleString()}`
+                              : "Never synced"}
+                          </div>
+                        </div>
+                        <div className="actions">
+                          <button
+                            className="btn btn-ghost"
+                            type="button"
+                            onClick={() => {
+                              setEditingDeviceId(device.id);
+                              setEditingDeviceName(device.name);
+                            }}
+                          >
+                            Rename
+                          </button>
+                          <button
+                            className="btn btn-ghost"
+                            type="button"
+                            onClick={async () => {
+                              await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
+                              await loadSession();
+                            }}
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 ))}
               </div>

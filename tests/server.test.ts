@@ -686,4 +686,127 @@ describe("nanotes sync server", () => {
       app.close();
     }
   });
+
+  test("renaming a device updates its record and pushes device-renamed only to its websocket", async () => {
+    const now = 1_700_000_000_000;
+    const app = createApp({
+      databasePath: ":memory:",
+      passwordHash: null,
+      mcpToken: null,
+      origin: "https://notes.example.com",
+      secureCookies: false,
+      clock: () => now,
+    });
+    const cookie = app.auth.startSession(now);
+    const laptop = app.auth.createDeviceToken("nanotes (Windows · QUILL-WIN)", now);
+    const phone = app.auth.createDeviceToken("nanotes (Android)", now);
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: app.fetch,
+      websocket: app.websocket,
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+    try {
+      const connectDevice = async (token: string) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/ws`);
+        const queue: Record<string, unknown>[] = [];
+        let waiter: ((msg: Record<string, unknown>) => void) | null = null;
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(String(event.data)) as Record<string, unknown>;
+          if (waiter) {
+            const resolve = waiter;
+            waiter = null;
+            resolve(msg);
+          } else {
+            queue.push(msg);
+          }
+        };
+        const nextMsg = async (pred: (m: Record<string, unknown>) => boolean, timeoutMs = 1500) => {
+          const deadline = Date.now() + timeoutMs;
+          while (Date.now() < deadline) {
+            const idx = queue.findIndex(pred);
+            if (idx >= 0) return queue.splice(idx, 1)[0]!;
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(() => {
+                waiter = null;
+                reject(new Error("timed out waiting for ws message"));
+              }, Math.max(10, deadline - Date.now()));
+              waiter = (m) => {
+                clearTimeout(timer);
+                queue.push(m);
+                resolve();
+              };
+            });
+          }
+          throw new Error("timed out waiting for ws message");
+        };
+        await new Promise<void>((resolve) => {
+          ws.onopen = () => resolve();
+        });
+        ws.send(JSON.stringify({ type: "auth", token }));
+        await nextMsg((m) => m["type"] === "authed");
+        return { ws, queue, nextMsg };
+      };
+
+      const laptopWs = await connectDevice(laptop.token);
+      const phoneWs = await connectDevice(phone.token);
+
+      // 1. Rename from web Devices panel (browser session auth).
+      const webRename = await fetch(`${base}/api/devices/${encodeURIComponent(laptop.device.id)}`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          origin: base,
+        },
+        body: JSON.stringify({ name: "thinkpad" }),
+      });
+      expect(webRename.status).toBe(200);
+      const webBody = (await webRename.json()) as { device: { name: string } };
+      expect(webBody.device.name).toBe("thinkpad");
+
+      const renamedMsg = await laptopWs.nextMsg((m) => m["type"] === "device-renamed");
+      expect(renamedMsg["deviceName"]).toBe("thinkpad");
+      expect(phoneWs.queue.some((m) => m["type"] === "device-renamed")).toBe(false);
+
+      // 2. Rename from the device itself (device bearer auth).
+      const selfRename = await fetch(`${base}/api/device`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${laptop.token}`,
+        },
+        body: JSON.stringify({ name: "laptop" }),
+      });
+      expect(selfRename.status).toBe(200);
+      const selfBody = (await selfRename.json()) as { device: { name: string } };
+      expect(selfBody.device.name).toBe("laptop");
+
+      const renamedAgain = await laptopWs.nextMsg((m) => m["type"] === "device-renamed");
+      expect(renamedAgain["deviceName"]).toBe("laptop");
+
+      // 3. Reject blank names and verify list reflects final name.
+      const blankRes = await fetch(`${base}/api/device`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${laptop.token}`,
+        },
+        body: JSON.stringify({ name: "   " }),
+      });
+      expect(blankRes.status).toBe(400);
+
+      const listRes = await fetch(`${base}/api/devices`, { headers: { cookie } });
+      const listBody = (await listRes.json()) as { devices: { id: string; name: string }[] };
+      expect(listBody.devices.find((d) => d.id === laptop.device.id)?.name).toBe("laptop");
+      expect(listBody.devices.find((d) => d.id === phone.device.id)?.name).toBe("nanotes (Android)");
+
+      laptopWs.ws.close();
+      phoneWs.ws.close();
+    } finally {
+      server.stop(true);
+      app.close();
+    }
+  });
 });

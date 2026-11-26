@@ -232,6 +232,17 @@ export function createApp(options: AppOptions): {
       return json(notes.push(ops, now));
     }
 
+    if (path === "/api/device" && req.method === "PATCH") {
+      const device = auth.deviceFromRequest(req, now);
+      if (!device) return error(401, "device authorization required");
+      const name = (await body(req))["name"];
+      if (typeof name !== "string" || !name.trim()) return error(400, "name required");
+      const updated = auth.renameDevice(device.id, name);
+      if (!updated) return error(404, "device not found");
+      collab.notifyDeviceRenamed(updated.id, updated.name);
+      return json({ ok: true, device: updated });
+    }
+
     // Browser-session-authenticated management & notes endpoints.
     if (!auth.isSignedIn(req, now)) return error(401, "sign in required");
 
@@ -261,6 +272,16 @@ export function createApp(options: AppOptions): {
     }
 
     const deviceMatch = /^\/api\/devices\/([^/]+)$/.exec(path);
+    if (deviceMatch && req.method === "PATCH") {
+      const id = decodeURIComponent(deviceMatch[1] as string);
+      const name = (await body(req))["name"];
+      if (typeof name !== "string" || !name.trim()) return error(400, "name required");
+      const updated = auth.renameDevice(id, name);
+      if (!updated) return error(404, "device not found");
+      collab.notifyDeviceRenamed(updated.id, updated.name);
+      return json({ ok: true, device: updated });
+    }
+
     if (deviceMatch && req.method === "DELETE") {
       const revoked = auth.revokeDevice(decodeURIComponent(deviceMatch[1] as string));
       return revoked ? json({ ok: true }) : error(404, "device not found");
@@ -326,7 +347,7 @@ export function createApp(options: AppOptions): {
         deviceName = "Web";
       }
       const upgraded = server.upgrade(req, {
-        data: collab.createClientData(authed, deviceName),
+        data: collab.createClientData(authed, deviceName, device ? device.id : null),
       });
       return upgraded ? (undefined as unknown as Response) : error(400, "websocket upgrade failed");
     }
