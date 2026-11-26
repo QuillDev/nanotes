@@ -21,7 +21,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "NaNotes",
+        "title": "nanotes",
         "width": 560,
         "height": 760,
         "minWidth": 380,
