@@ -595,4 +595,95 @@ describe("nanotes sync server", () => {
       app.close();
     }
   });
+
+  test("continuous collab typing flushes note-changed before typing stops", async () => {
+    const now = 1_700_000_200_000;
+    const app = createApp({
+      databasePath: ":memory:",
+      passwordHash: null,
+      mcpToken: null,
+      secureCookies: false,
+      origin: "http://127.0.0.1",
+      clock: () => now,
+      flushDebounceMs: 120,
+    });
+    const device = app.auth.createDeviceToken("Desktop", now);
+    const note = app.notes.create({ content: "# Start\n\n" }, now);
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: app.fetch,
+      websocket: app.websocket,
+    });
+    try {
+      const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/ws`);
+      const queue: Record<string, unknown>[] = [];
+      let waiter: ((msg: Record<string, unknown>) => void) | null = null;
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (waiter) {
+          const resolve = waiter;
+          waiter = null;
+          resolve(msg);
+        } else {
+          queue.push(msg);
+        }
+      };
+      const nextMsg = async (pred: (m: Record<string, unknown>) => boolean, timeoutMs = 2000) => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const idx = queue.findIndex(pred);
+          if (idx >= 0) return queue.splice(idx, 1)[0]!;
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              waiter = null;
+              reject(new Error("timed out waiting for ws message"));
+            }, Math.max(10, deadline - Date.now()));
+            waiter = (m) => {
+              clearTimeout(timer);
+              queue.push(m);
+              resolve();
+            };
+          });
+        }
+        throw new Error("timed out waiting for ws message");
+      };
+      await new Promise<void>((resolve) => {
+        ws.onopen = () => resolve();
+      });
+      ws.send(JSON.stringify({ type: "auth", token: device.token }));
+      await nextMsg((m) => m["type"] === "authed");
+      ws.send(JSON.stringify({ type: "join", noteId: note.id }));
+      const syncState = await nextMsg((m) => m["type"] === "sync-state");
+
+      const doc = new Y.Doc();
+      Y.applyUpdate(doc, base64ToBytes(String(syncState["update"])));
+      const ytext = doc.getText("content");
+      let lastUpd: Uint8Array | null = null;
+      doc.on("update", (u: Uint8Array) => {
+        lastUpd = u;
+      });
+
+      // Stream keystrokes every 60ms (faster than the 120ms trailing debounce) for ~660ms.
+      // Because of the max-wait cap (500ms), a note-changed broadcast must still fire mid-stream.
+      let flushedMidStream = false;
+      const chars = "abcdefghijk";
+      for (let i = 0; i < chars.length; i += 1) {
+        lastUpd = null;
+        ytext.insert(ytext.length, chars[i]!);
+        ws.send(JSON.stringify({ type: "yjs-update", noteId: note.id, update: bytesToBase64(lastUpd!) }));
+        await new Promise((r) => setTimeout(r, 60));
+        if (queue.some((m) => m["type"] === "note-changed")) {
+          flushedMidStream = true;
+          break;
+        }
+      }
+      expect(flushedMidStream).toBe(true);
+      ws.close();
+      doc.destroy();
+    } finally {
+      server.stop(true);
+      app.close();
+    }
+  });
 });

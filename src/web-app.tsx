@@ -122,13 +122,30 @@ const webEditorTheme = EditorView.theme(
   { dark: true },
 );
 
-function LiveNoteEditor({ session }: { session: NoteCollabSession }) {
+function titleFromMarkdown(content: string): string {
+  for (const rawLine of content.split(/\r?\n/)) {
+    const cleaned = rawLine.trim().replace(/^#+\s*/, "").trim();
+    if (cleaned) return cleaned.slice(0, 120);
+  }
+  return "Untitled";
+}
+
+function LiveNoteEditor({
+  session,
+  onTitleChange,
+}: {
+  session: NoteCollabSession;
+  onTitleChange?: (title: string) => void;
+}) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const onTitleChangeRef = React.useRef(onTitleChange);
+  onTitleChangeRef.current = onTitleChange;
 
   React.useLayoutEffect(() => {
     const parent = containerRef.current;
     if (!parent) return;
 
+    let lastTitle = titleFromMarkdown(session.ytext.toString());
     const state = EditorState.create({
       doc: session.ytext.toString(),
       extensions: [
@@ -139,12 +156,29 @@ function LiveNoteEditor({ session }: { session: NoteCollabSession }) {
         syntaxHighlighting(webHighlight),
         EditorView.lineWrapping,
         webEditorTheme,
+        EditorView.updateListener.of((vu) => {
+          if (vu.docChanged) {
+            const nextTitle = titleFromMarkdown(vu.state.doc.toString());
+            if (nextTitle !== lastTitle) {
+              lastTitle = nextTitle;
+              onTitleChangeRef.current?.(nextTitle);
+            }
+          }
+        }),
         yCollab(session.ytext, session.awareness, { undoManager: session.undoManager }),
       ],
     });
 
     const view = new EditorView({ state, parent });
+    // y-codemirror.next initializes remote selection decorations empty until the first view update;
+    // nudge the view on mount so peers already in the room appear immediately.
+    const raf = requestAnimationFrame(() => {
+      if (session.awareness.getStates().size > 1) {
+        view.dispatch({});
+      }
+    });
     return () => {
+      cancelAnimationFrame(raf);
       view.destroy();
     };
   }, [session]);
@@ -804,7 +838,16 @@ function WebApp() {
               </div>
             ) : null}
             {liveSession ? (
-              <LiveNoteEditor key={liveSession.noteId} session={liveSession} />
+              <LiveNoteEditor
+                key={liveSession.noteId}
+                session={liveSession}
+                onTitleChange={(title) => {
+                  const id = liveSession.noteId;
+                  setNotes((prev) =>
+                    prev.map((item) => (item.id === id && item.title !== title ? { ...item, title } : item)),
+                  );
+                }}
+              />
             ) : activeNoteId ? (
               <div className="editorEmpty">Connecting to live note…</div>
             ) : (

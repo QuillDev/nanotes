@@ -271,10 +271,27 @@ fn http_client() -> Result<reqwest::Client, String> {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
     }
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| error.to_string())
+    let builder = reqwest::Client::builder().timeout(Duration::from_secs(20));
+
+    // On Android, rustls-platform-verifier requires JNI initialization and a bundled
+    // Kotlin helper or it panics on the first HTTPS request. Use Mozilla's bundled
+    // roots directly on Android so HTTPS works out of the box.
+    #[cfg(target_os = "android")]
+    let builder = {
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        let tls = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|error| error.to_string())?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        builder.tls_backend_preconfigured(tls)
+    };
+
+    builder.build().map_err(|error| error.to_string())
 }
 
 fn default_device_name() -> String {
@@ -489,9 +506,12 @@ async fn pull_changes(
                     let local_content = fs::read_to_string(&dest).unwrap_or_default();
                     let local_hash = sha256_hex(&local_content);
                     if local_hash != remote.content_hash {
-                        let copy_path = conflict_copy_path(root, &remote.path);
-                        fs::write(&copy_path, &local_content).map_err(|error| error.to_string())?;
-                        conflicts += 1;
+                        // Never fork an empty local scratch file into a conflict copy.
+                        if !local_content.trim().is_empty() {
+                            let copy_path = conflict_copy_path(root, &remote.path);
+                            fs::write(&copy_path, &local_content).map_err(|error| error.to_string())?;
+                            conflicts += 1;
+                        }
                         write_remote_file(root, &remote.path, &remote.content)?;
                         if active_path.as_deref() == Some(remote.path.as_str()) {
                             active_changed = true;
