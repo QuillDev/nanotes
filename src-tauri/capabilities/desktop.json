@@ -12,6 +12,8 @@
     "core:default",
     "core:window:allow-hide",
     "core:window:allow-start-dragging",
-    "autostart:default"
+    "autostart:default",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

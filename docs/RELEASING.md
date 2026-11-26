@@ -15,11 +15,12 @@ NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Wi
 
    You can also attach release builds to an existing tag from the GitHub Actions UI via **Release -> Run workflow** with the tag name (or leave the tag blank for a build-only check).
 
-3. The `Release` workflow builds all four targets in parallel and uploads the assets plus `SHA256SUMS.txt` to the GitHub Release:
-   - macOS Apple Silicon: `NaNotes_<version>_aarch64.app.tar.gz` (ad-hoc signed)
-   - macOS Intel: `NaNotes_<version>_x64.app.tar.gz` (ad-hoc signed)
-   - Windows x64: `NaNotes_<version>_x64-setup.exe` (NSIS installer)
+3. The `Release` workflow builds all four targets in parallel and uploads the assets, updater signatures + `latest.json`, and `SHA256SUMS.txt` to the GitHub Release:
+   - macOS Apple Silicon: `NaNotes_<version>_aarch64.app.tar.gz` (ad-hoc signed + updater `.sig`)
+   - macOS Intel: `NaNotes_<version>_x64.app.tar.gz` (ad-hoc signed + updater `.sig`)
+   - Windows x64: `NaNotes_<version>_x64-setup.exe` (NSIS installer + updater `.sig`)
    - Linux x86_64: `nanotes_<version>_linux_x86_64.tar.gz` (used by `install.sh`) and `.deb`
+   - In-app updater manifest: `latest.json` (signed with the `TAURI_SIGNING_PRIVATE_KEY` Actions secret, matching `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`)
 
 ## Automatic package manager updates
 
