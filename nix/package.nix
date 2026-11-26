@@ -16,7 +16,7 @@
 
 rustPlatform.buildRustPackage rec {
   pname = "nanotes";
-  version = "0.3.8";
+  version = "0.3.9";
 
   src = lib.fileset.toSource {
     root = ../.;
