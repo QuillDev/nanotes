@@ -60,6 +60,7 @@ interface AppConfig {
   glassBlur: number;
   syncUrl: string;
   syncToken: string;
+  syncDeviceName: string;
 }
 
 interface PairingStartResult {
@@ -97,6 +98,7 @@ const SAVE_DELAY_MS = 500;
 const IS_MAC = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
 const IS_WINDOWS = /Win/i.test(navigator.userAgent);
 const IS_ANDROID = /Android/i.test(navigator.userAgent);
+const DEFAULT_CLIENT_NAME = IS_MAC ? 'macOS' : IS_WINDOWS ? 'Windows' : IS_ANDROID ? 'Android' : 'Linux';
 // Matches the Rust DEFAULT_HOTKEY: Option/Alt + N. Stored in the plugin's
 // accelerator format ("alt+KeyN") so it round-trips straight to `set_hotkey`.
 const DEFAULT_HOTKEY = 'alt+KeyN';
@@ -218,6 +220,7 @@ function defaultAppConfig(): AppConfig {
     glassBlur: DEFAULT_GLASS_BLUR,
     syncUrl: '',
     syncToken: '',
+    syncDeviceName: '',
   };
 }
 
@@ -239,6 +242,7 @@ function normalizeAppConfig(config: Partial<AppConfig> | null | undefined): AppC
     glassBlur: Number.isFinite(glassBlur) ? Math.min(40, Math.max(0, glassBlur)) : defaults.glassBlur,
     syncUrl: typeof config?.syncUrl === 'string' ? config.syncUrl.trim() : '',
     syncToken: typeof config?.syncToken === 'string' ? config.syncToken.trim() : '',
+    syncDeviceName: typeof config?.syncDeviceName === 'string' ? config.syncDeviceName.trim().slice(0, 80) : '',
   };
 }
 
@@ -258,6 +262,7 @@ function browserPreviewConfig(): AppConfig {
     glassTint: window.localStorage.getItem('nanotes:browserPreviewGlassTint') ?? undefined,
     glassOpacity: Number(window.localStorage.getItem('nanotes:browserPreviewGlassOpacity')),
     glassBlur: Number(window.localStorage.getItem('nanotes:browserPreviewGlassBlur')),
+    syncDeviceName: window.localStorage.getItem('nanotes:browserPreviewSyncDeviceName') ?? undefined,
   });
 }
 
@@ -269,6 +274,7 @@ function writeBrowserPreviewConfig(config: AppConfig) {
   window.localStorage.setItem('nanotes:browserPreviewGlassTint', config.glassTint);
   window.localStorage.setItem('nanotes:browserPreviewGlassOpacity', String(config.glassOpacity));
   window.localStorage.setItem('nanotes:browserPreviewGlassBlur', String(config.glassBlur));
+  window.localStorage.setItem('nanotes:browserPreviewSyncDeviceName', config.syncDeviceName);
 }
 
 // Common fence languages are preloaded with their support already resolved so
@@ -2106,6 +2112,12 @@ function App() {
   const [syncOpen, setSyncOpen] = React.useState(false);
   const [syncUrl, setSyncUrl] = React.useState(initialConfig.syncUrl);
   const [syncToken, setSyncToken] = React.useState(initialConfig.syncToken);
+  const [syncDeviceName, setSyncDeviceName] = React.useState(initialConfig.syncDeviceName);
+  const syncDeviceNameRef = React.useRef(syncDeviceName);
+  syncDeviceNameRef.current = syncDeviceName;
+  const lastServerDeviceNameRef = React.useRef<string | null>(null);
+  const lastSentDeviceNameRef = React.useRef<string | null>(null);
+  const deviceNameDirtyRef = React.useRef(false);
   const [syncStatus, setSyncStatus] = React.useState<'idle' | 'syncing' | 'error'>('idle');
   const [syncError, setSyncError] = React.useState<string | null>(null);
   const [collabStatus, setCollabStatus] = React.useState<CollabConnectionStatus>('disconnected');
@@ -2622,7 +2634,11 @@ function App() {
     setSyncError(null);
     setSyncStatus('idle');
     try {
-      const started = await invoke<PairingStartResult>('sync_start_pairing', { serverUrl });
+      const customName = syncDeviceNameRef.current.trim();
+      const started = await invoke<PairingStartResult>('sync_start_pairing', {
+        serverUrl,
+        ...(customName ? { deviceName: customName } : {}),
+      });
       setPairingStarting(false);
       setPairingCode(started.code);
       setPairingUrl(started.verificationUrl);
@@ -2699,6 +2715,49 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [appConfigReady, pinnedPaths, runSync, syncToken, syncUrl]);
 
+  const commitDeviceName = React.useCallback(
+    async (rawName: string) => {
+      const serverUrl = syncUrl.trim();
+      const token = syncToken.trim();
+      if (!IS_TAURI || !serverUrl || !token) {
+        return;
+      }
+      const nextName = rawName.trim().slice(0, 80) || DEFAULT_CLIENT_NAME;
+      if (!deviceNameDirtyRef.current && nextName === lastServerDeviceNameRef.current) {
+        return;
+      }
+      if (nextName === lastServerDeviceNameRef.current) {
+        deviceNameDirtyRef.current = false;
+        return;
+      }
+      try {
+        lastSentDeviceNameRef.current = nextName;
+        const saved = await invoke<string>('sync_rename_device', {
+          serverUrl,
+          syncToken: token,
+          deviceName: nextName,
+        });
+        lastServerDeviceNameRef.current = saved;
+        if ((syncDeviceNameRef.current.trim().slice(0, 80) || DEFAULT_CLIENT_NAME) === nextName) {
+          deviceNameDirtyRef.current = false;
+        }
+      } catch (error: unknown) {
+        setSyncError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [syncToken, syncUrl],
+  );
+
+  React.useEffect(() => {
+    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim() || !deviceNameDirtyRef.current) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void commitDeviceName(syncDeviceName);
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [appConfigReady, commitDeviceName, syncDeviceName, syncToken, syncUrl]);
+
   // Persistent WebSocket live-collab connection for real-time CRDT editing and instant note events.
   React.useEffect(() => {
     if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
@@ -2707,6 +2766,7 @@ function App() {
       setLiveSession(null);
       setActiveNoteId(null);
       setCollabStatus('disconnected');
+      lastServerDeviceNameRef.current = null;
       return;
     }
 
@@ -2725,6 +2785,25 @@ function App() {
       serverUrl: syncUrl.trim(),
       token: syncToken.trim(),
       onStatus: status => setCollabStatus(status),
+      onAuthed: serverName => {
+        lastServerDeviceNameRef.current = serverName;
+        if (deviceNameDirtyRef.current) {
+          void commitDeviceName(syncDeviceNameRef.current);
+          return;
+        }
+        if (serverName && !/^nanotes \(/i.test(serverName) && serverName !== syncDeviceNameRef.current.trim()) {
+          setSyncDeviceName(serverName);
+        }
+      },
+      onDeviceRenamed: serverName => {
+        lastServerDeviceNameRef.current = serverName;
+        const current = syncDeviceNameRef.current.trim().slice(0, 80) || DEFAULT_CLIENT_NAME;
+        if (deviceNameDirtyRef.current && lastSentDeviceNameRef.current === serverName && current !== serverName) {
+          return;
+        }
+        deviceNameDirtyRef.current = false;
+        setSyncDeviceName(serverName);
+      },
       onNoteChanged: event => {
         if (event.id !== liveSessionRef.current?.noteId || event.deletedAt !== null) {
           kickSync();
@@ -2750,7 +2829,7 @@ function App() {
       setLiveSession(null);
       setCollabStatus('disconnected');
     };
-  }, [appConfigReady, runSync, syncToken, syncUrl]);
+  }, [appConfigReady, commitDeviceName, runSync, syncToken, syncUrl]);
 
   // Resolve the active note's server ID whenever the active file changes.
   const isLoadingNote = state.status === 'loading';
@@ -2794,7 +2873,7 @@ function App() {
     let cancelled = false;
     let session: NoteCollabSession | null = null;
     const notesDir = stateRef.current.notesDir;
-    const peerName = IS_MAC ? 'macOS' : IS_WINDOWS ? 'Windows' : IS_ANDROID ? 'Android' : 'Linux';
+    const peerName = syncDeviceNameRef.current.trim() || DEFAULT_CLIENT_NAME;
 
     const attachReady = (readySession: NoteCollabSession) => {
       if (cancelled) return;
@@ -2868,6 +2947,11 @@ function App() {
       setLiveSession(prev => (prev === session ? null : prev));
     };
   }, [activeNoteId, runSync, syncToken, syncUrl]);
+
+  // Propagate device name edits to the live cursor label immediately without reconnecting.
+  React.useEffect(() => {
+    liveSession?.setPeerName(syncDeviceName.trim() || DEFAULT_CLIENT_NAME);
+  }, [liveSession, syncDeviceName]);
 
   // Keep .nanotes-sync.json aligned whenever a live-edited note flushes to its local .md file.
   React.useEffect(() => {
@@ -2983,6 +3067,7 @@ function App() {
         setGlassBlur(next.glassBlur);
         setSyncUrl(next.syncUrl);
         setSyncToken(next.syncToken);
+        setSyncDeviceName(next.syncDeviceName);
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -3014,6 +3099,7 @@ function App() {
       glassBlur,
       syncUrl,
       syncToken,
+      syncDeviceName,
     });
     if (!IS_TAURI) {
       writeBrowserPreviewConfig(config);
@@ -3022,7 +3108,7 @@ function App() {
     void invoke('write_app_config', { config }).catch((error: unknown) => {
       setState(prev => ({ ...prev, status: 'error', message: `Settings: ${String(error)}` }));
     });
-  }, [acceptedHotkey, appConfigReady, glassBlur, glassOpacity, glassTint, pinnedPaths, state.notePath, state.notesDir, syncToken, syncUrl]);
+  }, [acceptedHotkey, appConfigReady, glassBlur, glassOpacity, glassTint, pinnedPaths, state.notePath, state.notesDir, syncDeviceName, syncToken, syncUrl]);
 
   // Load the initial note once settings have loaded. Subsequent folder/note
   // changes are driven explicitly by loadNote/openNote/createNewNote.
@@ -3430,6 +3516,30 @@ function App() {
                     />
                   </label>
 
+                  <label className="syncField">
+                    <span>Device name</span>
+                    <input
+                      type="text"
+                      maxLength={80}
+                      placeholder={DEFAULT_CLIENT_NAME}
+                      value={syncDeviceName}
+                      onChange={event => {
+                        deviceNameDirtyRef.current = true;
+                        setSyncDeviceName(event.target.value);
+                      }}
+                      onBlur={event => {
+                        if (deviceNameDirtyRef.current) {
+                          void commitDeviceName(event.target.value);
+                        }
+                      }}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') {
+                          event.currentTarget.blur();
+                        }
+                      }}
+                    />
+                  </label>
+
                   <div className="settingRow">
                     <strong>
                       {pairingCode
@@ -3481,6 +3591,8 @@ function App() {
                             onClick={() => {
                               stopPairing();
                               setSyncToken('');
+                              lastServerDeviceNameRef.current = null;
+                              deviceNameDirtyRef.current = false;
                               setSyncError(null);
                               setSyncStatus('idle');
                             }}

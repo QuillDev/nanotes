@@ -186,6 +186,25 @@ export class Auth {
       }));
   }
 
+  renameDevice(id: string, name: string): DeviceInfo | null {
+    const cleanName = name.trim().slice(0, 80);
+    if (!cleanName) return null;
+    const result = this.database.query("UPDATE device_tokens SET name = ? WHERE id = ?").run(cleanName, id);
+    if (result.changes === 0) return null;
+    const row = this.database
+      .query<{ id: string; name: string; created_at: number; last_used_at: number | null }, [string]>(
+        "SELECT id, name, created_at, last_used_at FROM device_tokens WHERE id = ?",
+      )
+      .get(id);
+    if (!row) return null;
+    return {
+      id: row.id,
+      name: row.name,
+      createdAt: row.created_at,
+      lastUsedAt: row.last_used_at,
+    };
+  }
+
   revokeDevice(id: string): boolean {
     const result = this.database.query("DELETE FROM device_tokens WHERE id = ?").run(id);
     return result.changes > 0;

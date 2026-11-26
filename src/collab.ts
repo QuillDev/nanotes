@@ -163,6 +163,19 @@ export class NoteCollabSession {
     return this.ready ? Y.encodeStateVector(this.doc) : null;
   }
 
+  /** Updates the cursor label shown to other connected clients without reconnecting. */
+  setPeerName(name: string): void {
+    if (this.destroyed) return;
+    const trimmed = name.trim().slice(0, 80);
+    if (!trimmed) return;
+    const prev = (this.awareness.getLocalState()?.["user"] ?? {}) as Record<string, unknown>;
+    if (prev["name"] === trimmed) return;
+    this.awareness.setLocalStateField("user", {
+      ...prev,
+      name: trimmed,
+    });
+  }
+
   handleSyncState(msg: {
     update: string;
     stateVector: string;
@@ -321,6 +334,8 @@ export interface CollabClientOptions {
   /** Optional device bearer token (desktop); omit for cookie-authenticated web sessions. */
   token?: string;
   onStatus?: (status: CollabConnectionStatus) => void;
+  onAuthed?: (deviceName: string) => void;
+  onDeviceRenamed?: (deviceName: string) => void;
   onNoteChanged?: (note: LiveNoteEvent) => void;
   onError?: (message: string) => void;
 }
@@ -460,9 +475,16 @@ export class CollabClient {
           this.deviceName = msg["deviceName"];
         }
         this.setStatus("connected");
+        this.options.onAuthed?.(this.deviceName);
         if (this.session) {
           this.sendJoin(this.session);
         }
+        return;
+      }
+
+      if (type === "device-renamed" && typeof msg["deviceName"] === "string") {
+        this.deviceName = msg["deviceName"];
+        this.options.onDeviceRenamed?.(this.deviceName);
         return;
       }
 

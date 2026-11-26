@@ -20,6 +20,7 @@ const SERVER_DIFF_ORIGIN = Symbol("server-external-diff");
 export interface WsClientData {
   id: string;
   authed: boolean;
+  deviceId: string | null;
   deviceName: string;
   rooms: Set<string>;
   authTimer: ReturnType<typeof setTimeout> | null;
@@ -74,14 +75,24 @@ export class CollabHub {
     this.flushDebounceMs = options?.flushDebounceMs ?? FLUSH_DEBOUNCE_MS;
   }
 
-  createClientData(authed: boolean, deviceName: string): WsClientData {
+  createClientData(authed: boolean, deviceName: string, deviceId: string | null = null): WsClientData {
     return {
       id: randomUUID(),
       authed,
+      deviceId,
       deviceName,
       rooms: new Set<string>(),
       authTimer: null,
     };
+  }
+
+  notifyDeviceRenamed(deviceId: string, deviceName: string): void {
+    for (const ws of this.clients) {
+      if (ws.data.authed && ws.data.deviceId === deviceId) {
+        ws.data.deviceName = deviceName;
+        sendJson(ws, { type: "device-renamed", deviceName });
+      }
+    }
   }
 
   onOpen(ws: ServerWebSocket<WsClientData>): void {
@@ -145,6 +156,7 @@ export class CollabHub {
         return;
       }
       ws.data.authed = true;
+      ws.data.deviceId = device.id;
       ws.data.deviceName = device.name;
       if (ws.data.authTimer) {
         clearTimeout(ws.data.authTimer);

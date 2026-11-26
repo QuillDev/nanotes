@@ -59,6 +59,8 @@ struct AppConfig {
     sync_url: String,
     #[serde(default)]
     sync_token: String,
+    #[serde(default)]
+    sync_device_name: String,
 }
 
 impl Default for AppConfig {
@@ -73,6 +75,7 @@ impl Default for AppConfig {
             glass_blur: 0.0,
             sync_url: String::new(),
             sync_token: String::new(),
+            sync_device_name: String::new(),
         }
     }
 }
@@ -488,6 +491,7 @@ fn normalize_app_config(mut config: AppConfig) -> AppConfig {
         config.glass_blur = 0.0;
     }
     config.glass_blur = config.glass_blur.clamp(0.0, 40.0);
+    config.sync_device_name = config.sync_device_name.trim().chars().take(80).collect();
     config
 }
 
@@ -800,6 +804,15 @@ async fn sync_poll_pairing(
 }
 
 #[tauri::command]
+async fn sync_rename_device(
+    server_url: String,
+    sync_token: String,
+    device_name: String,
+) -> Result<String, String> {
+    sync::rename_device(&server_url, &sync_token, &device_name).await
+}
+
+#[tauri::command]
 async fn sync_now(
     notes_dir: String,
     server_url: String,
@@ -870,6 +883,7 @@ pub fn run() {
             clear_hotkey,
             sync_start_pairing,
             sync_poll_pairing,
+            sync_rename_device,
             sync_now,
             sync_note_id_for_path,
             sync_read_yjs_state,
