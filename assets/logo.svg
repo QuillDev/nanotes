@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="360" height="140" fill="none" aria-label="NaNotes" role="img" viewBox="0 0 360 140">
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="140" fill="none" aria-label="nanotes" role="img" viewBox="0 0 360 140">
   <defs>
     <linearGradient id="panel" x1="0" x2="0" y1="0" y2="1">
       <stop offset="0" stop-color="#16161b"/>
@@ -29,5 +29,5 @@
       <path fill="#a0a3b0" d="M159.54 88.75Q158.45 90.86 157.63 93.13Q156.82 95.41 156.14 97.25Q154.64 101.26 152.63 105.85Q150.63 110.44 148.25 114.72Q145.87 119.01 143.15 122.34Q140.36 125.81 136.38 129.62Q132.4 133.42 127.58 136.79Q122.75 140.16 117.24 142.33L107.86 132.68Q113.3 130.77 118.06 128.05Q122.82 125.33 126.79 122Q130.77 118.67 133.76 115.13Q137.1 111.19 139.65 106.12Q142.2 101.06 143.96 95.68Q145.73 90.31 146.62 85.42Z"/>
     </g>
   </g>
-  <text x="150" y="71" fill="#e8e9ee" dominant-baseline="central" font-family="'JetBrains Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,monospace" font-size="40" font-weight="700">NaNotes</text>
+  <text x="150" y="71" fill="#e8e9ee" dominant-baseline="central" font-family="'JetBrains Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,monospace" font-size="40" font-weight="700"><tspan fill="#ec4899">na</tspan>notes</text>
 </svg>

@@ -162,7 +162,7 @@ type ShellStyle = React.CSSProperties & {
   '--glass-blur': string;
   '--glass-softness': string;
 };
-const SAMPLE_NOTE = `# NaNotes
+const SAMPLE_NOTE = `# nanotes
 
 Quick Markdown notes that stay in local files.
 
@@ -2213,7 +2213,7 @@ function App() {
     // The Tauri note list is fetched by the searchOpen/searchQuery effect below;
     // here we only seed the browser-preview list, which that effect skips.
     if (!IS_TAURI) {
-      setNotes([{ path: DEFAULT_NOTE, title: 'NaNotes', modifiedMs: 0 }]);
+      setNotes([{ path: DEFAULT_NOTE, title: 'nanotes', modifiedMs: 0 }]);
     }
   }, []);
 
