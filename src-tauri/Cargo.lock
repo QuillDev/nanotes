@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "nanotes"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "hex",
  "nucleo-matcher",
