@@ -612,6 +612,60 @@ fn hide_overlay(app: &AppHandle) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn configure_windows_glass(app: &AppHandle) {
+    use tauri::window::{Color, Effect, EffectsBuilder};
+
+    #[repr(C)]
+    struct Margins {
+        cx_left_width: i32,
+        cx_right_width: i32,
+        cy_top_height: i32,
+        cy_bottom_height: i32,
+    }
+
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmExtendFrameIntoClientArea(hwnd: *mut std::ffi::c_void, p_mar_inset: *const Margins) -> i32;
+        fn DwmSetWindowAttribute(
+            hwnd: *mut std::ffi::c_void,
+            dw_attribute: u32,
+            pv_attribute: *const std::ffi::c_void,
+            cb_attribute: u32,
+        ) -> i32;
+    }
+
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWCP_ROUND: u32 = 2;
+
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(hwnd) = window.hwnd() {
+            let hwnd = hwnd.0 as *mut std::ffi::c_void;
+            let margins = Margins {
+                cx_left_width: -1,
+                cx_right_width: -1,
+                cy_top_height: -1,
+                cy_bottom_height: -1,
+            };
+            unsafe {
+                let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_WINDOW_CORNER_PREFERENCE,
+                    (&DWMWCP_ROUND as *const u32).cast(),
+                    std::mem::size_of::<u32>() as u32,
+                );
+            }
+        }
+        let _ = window.set_effects(
+            EffectsBuilder::new()
+                .effect(Effect::Acrylic)
+                .color(Color(9, 9, 12, 180))
+                .build(),
+        );
+    }
+}
+
 fn configure_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if let Err(error) = window.set_always_on_top(true) {
@@ -730,6 +784,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+            #[cfg(target_os = "windows")]
+            {
+                configure_windows_glass(app.handle());
             }
             // Do not rely on the window config's initial visibility. Accessory/skipTaskbar
             // apps have no Dock or taskbar icon to recover from a suppressed presentation.
