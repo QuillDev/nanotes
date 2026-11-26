@@ -15,7 +15,7 @@ use tauri::{
     AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, Window,
     WindowEvent,
 };
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(desktop, not(target_os = "linux")))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const DEFAULT_WINDOW_WIDTH: i32 = 560;
@@ -126,7 +126,15 @@ impl AsRef<str> for NoteCandidate {
     }
 }
 
+/// Android and iOS have no user home, so `~` points at the app's private data
+/// directory there. Set once during setup.
+#[cfg(mobile)]
+static MOBILE_HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 fn user_home_dir() -> Option<PathBuf> {
+    #[cfg(mobile)]
+    return MOBILE_HOME.get().cloned();
+    #[cfg(desktop)]
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .or_else(|| std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()))
@@ -334,7 +342,16 @@ fn delete_note(notes_dir: String, note_path: String) -> Result<(), String> {
     if !target.exists() {
         return Ok(());
     }
-    trash::delete(&target).map_err(|error| error.to_string())
+    move_to_trash(&target)
+}
+
+/// Desktop deletes go to the system trash; Android and iOS have no trash, so
+/// the file is removed.
+fn move_to_trash(path: &Path) -> Result<(), String> {
+    #[cfg(desktop)]
+    return trash::delete(path).map_err(|error| error.to_string());
+    #[cfg(mobile)]
+    return fs::remove_file(path).map_err(|error| error.to_string());
 }
 
 #[tauri::command]
@@ -593,6 +610,7 @@ fn save_window_frame(window: &Window) {
     }
 }
 
+#[cfg(desktop)]
 fn show_overlay(app: &AppHandle) {
     configure_window(app);
     if let Some(window) = app.get_webview_window("main") {
@@ -606,7 +624,7 @@ fn show_overlay(app: &AppHandle) {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(desktop, not(target_os = "linux")))]
 fn toggle_overlay(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         match window.is_visible() {
@@ -678,6 +696,7 @@ fn configure_windows_glass(app: &AppHandle) {
     }
 }
 
+#[cfg(desktop)]
 fn configure_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if let Err(error) = window.set_always_on_top(true) {
@@ -708,7 +727,7 @@ fn configure_window(app: &AppHandle) {
 /// Register `accelerator` as the overlay toggle, replacing any shortcut that was
 /// previously registered. The accelerator uses the plugin's textual format, e.g.
 /// "alt+KeyN" or "super+shift+KeyN".
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(desktop, not(target_os = "linux")))]
 fn apply_hotkey(app: &AppHandle, accelerator: &str) -> Result<(), String> {
     let shortcut: Shortcut = accelerator
         .parse()
@@ -729,13 +748,13 @@ fn apply_hotkey(app: &AppHandle, accelerator: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(desktop, not(target_os = "linux")))]
 fn set_hotkey(app: AppHandle, accelerator: String) -> Result<(), String> {
     apply_hotkey(&app, &accelerator)
 }
 
 #[tauri::command]
-#[cfg(target_os = "linux")]
+#[cfg(any(mobile, target_os = "linux"))]
 fn set_hotkey(_app: AppHandle, _accelerator: String) -> Result<(), String> {
     Ok(())
 }
@@ -744,22 +763,22 @@ fn set_hotkey(_app: AppHandle, _accelerator: String) -> Result<(), String> {
 /// presses (e.g. while the settings hotkey recorder is listening) instead of the
 /// OS swallowing the combo to toggle the window.
 #[tauri::command]
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(desktop, not(target_os = "linux")))]
 fn clear_hotkey(app: AppHandle) {
     let _ = app.global_shortcut().unregister_all();
 }
 
 #[tauri::command]
-#[cfg(target_os = "linux")]
+#[cfg(any(mobile, target_os = "linux"))]
 fn clear_hotkey(_app: AppHandle) {}
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(desktop, not(target_os = "linux")))]
 fn register_hotkey(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     apply_hotkey(app, DEFAULT_HOTKEY)?;
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(mobile, target_os = "linux"))]
 fn register_hotkey(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
@@ -828,12 +847,13 @@ fn sync_mark_note_synced(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().plugin(tauri_plugin_autostart::Builder::new().build());
+    let builder = tauri::Builder::default();
     #[cfg(desktop)]
     let builder = builder
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build());
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(desktop, not(target_os = "linux")))]
     let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
     builder
@@ -876,10 +896,15 @@ pub fn run() {
             }
             // Do not rely on the window config's initial visibility. Accessory/skipTaskbar
             // apps have no Dock or taskbar icon to recover from a suppressed presentation.
-            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            #[cfg(desktop)]
             show_overlay(app.handle());
-            #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-            configure_window(app.handle());
+            #[cfg(mobile)]
+            {
+                let home = app.path().app_data_dir()?;
+                fs::create_dir_all(&home)?;
+                app.asset_protocol_scope().allow_directory(&home, true)?;
+                let _ = MOBILE_HOME.set(home);
+            }
             if let Err(error) = register_hotkey(app.handle()) {
                 eprintln!("failed to register NaNotes global hotkey: {error}");
             }

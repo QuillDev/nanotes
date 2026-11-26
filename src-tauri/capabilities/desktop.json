@@ -13,6 +13,7 @@
     "core:window:allow-hide",
     "core:window:allow-start-dragging",
     "autostart:default",
+    "global-shortcut:default",
     "opener:default",
     "updater:default",
     "process:allow-restart"

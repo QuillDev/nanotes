@@ -1,0 +1,6 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- nanotes is dark only; the window background fills the status and navigation bar areas. -->
+    <style name="Theme.nanotes" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowBackground">@color/nanotes_background</item>
+    </style>
+</resources>

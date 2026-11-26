@@ -282,6 +282,8 @@ fn default_device_name() -> String {
         "macOS"
     } else if cfg!(target_os = "windows") {
         "Windows"
+    } else if cfg!(target_os = "android") {
+        "Android"
     } else {
         "Linux"
     };
@@ -373,7 +375,7 @@ async fn pull_changes(
                     if prev_file.exists() {
                         let local_content = fs::read_to_string(&prev_file).unwrap_or_default();
                         if sha256_hex(&local_content) == prev.content_hash {
-                            let _ = trash::delete(&prev_file).or_else(|_| fs::remove_file(&prev_file));
+                            let _ = crate::move_to_trash(&prev_file).or_else(|_| fs::remove_file(&prev_file).map_err(|error| error.to_string()));
                             pinned_set.remove(&prev.path);
                             if active_path.as_deref() == Some(prev.path.as_str()) {
                                 active_changed = true;

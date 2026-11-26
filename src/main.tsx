@@ -96,6 +96,7 @@ const DEFAULT_NOTE = 'Untitled.md';
 const SAVE_DELAY_MS = 500;
 const IS_MAC = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
 const IS_WINDOWS = /Win/i.test(navigator.userAgent);
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
 // Matches the Rust DEFAULT_HOTKEY: Option/Alt + N. Stored in the plugin's
 // accelerator format ("alt+KeyN") so it round-trips straight to `set_hotkey`.
 const DEFAULT_HOTKEY = 'alt+KeyN';
@@ -2764,7 +2765,7 @@ function App() {
     let cancelled = false;
     let session: NoteCollabSession | null = null;
     const notesDir = stateRef.current.notesDir;
-    const peerName = IS_MAC ? 'macOS' : IS_WINDOWS ? 'Windows' : 'Linux';
+    const peerName = IS_MAC ? 'macOS' : IS_WINDOWS ? 'Windows' : IS_ANDROID ? 'Android' : 'Linux';
 
     const attachReady = (readySession: NoteCollabSession) => {
       if (cancelled) return;
@@ -3236,6 +3237,20 @@ function App() {
               <path d="M5 12h14" />
             </svg>
           </button>
+          {IS_ANDROID ? (
+            <button
+              className="topbarButton"
+              type="button"
+              aria-label="Settings"
+              onClick={() => setSettingsOpen(value => !value)}
+            >
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 6h16" />
+                <path d="M4 12h16" />
+                <path d="M4 18h16" />
+              </svg>
+            </button>
+          ) : null}
           {IS_WINDOWS ? (
             <button
               className="topbarButton"
@@ -3272,86 +3287,90 @@ function App() {
             </button>
           </header>
           <div className="settingsBody">
-            <label>
-              <span>Notes folder</span>
-              <PathInput
-                value={state.notesDir}
-                onChange={notesDir => setState(prev => ({ ...prev, notesDir }))}
-                onCommit={loadNote}
-              />
-            </label>
-
-            <div className="settingRow">
-              <strong>New note hotkey</strong>
-              <button
-                className={recordingHotkey ? 'hotkeyButton hotkeyButton-recording' : 'hotkeyButton'}
-                type="button"
-                aria-label="Change new note hotkey"
-                onClick={() => setRecordingHotkey(recording => !recording)}
-                onBlur={() => setRecordingHotkey(false)}
-              >
-                {recordingHotkey ? 'Press keys…' : formatHotkey(hotkey)}
-              </button>
-            </div>
-
-            <details
-              className="settingsFold"
-              open={appearanceOpen}
-              onToggle={event => setAppearanceOpen(event.currentTarget.open)}
-            >
-              <summary className="settingsFoldSummary">
-                <span>Appearance</span>
-              </summary>
-
-              <div className="settingsFoldBody">
-                <div className="settingRow settingRow-stacked">
-                  <div className="settingRowHeader">
-                    <strong>Glass tint</strong>
-                    <input
-                      className="colorInput"
-                      type="color"
-                      aria-label="Glass tint"
-                      value={glassTint}
-                      onChange={event => setGlassTint(event.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <div className="settingRow settingRow-stacked">
-                  <div className="settingRowHeader">
-                    <strong>Glass opacity</strong>
-                    <span className="settingValue">{Math.round(glassOpacity * 100)}%</span>
-                  </div>
-                  <input
-                    className="rangeInput"
-                    type="range"
-                    min="0.12"
-                    max="0.96"
-                    step="0.01"
-                    aria-label="Glass opacity"
-                    value={glassOpacity}
-                    onChange={event => setGlassOpacity(Number(event.target.value))}
+            {IS_ANDROID ? null : (
+              <>
+                <label>
+                  <span>Notes folder</span>
+                  <PathInput
+                    value={state.notesDir}
+                    onChange={notesDir => setState(prev => ({ ...prev, notesDir }))}
+                    onCommit={loadNote}
                   />
+                </label>
+
+                <div className="settingRow">
+                  <strong>New note hotkey</strong>
+                  <button
+                    className={recordingHotkey ? 'hotkeyButton hotkeyButton-recording' : 'hotkeyButton'}
+                    type="button"
+                    aria-label="Change new note hotkey"
+                    onClick={() => setRecordingHotkey(recording => !recording)}
+                    onBlur={() => setRecordingHotkey(false)}
+                  >
+                    {recordingHotkey ? 'Press keys…' : formatHotkey(hotkey)}
+                  </button>
                 </div>
 
-                <div className="settingRow settingRow-stacked">
-                  <div className="settingRowHeader">
-                    <strong>Glass blur</strong>
-                    <span className="settingValue">{glassBlur}px</span>
+                <details
+                  className="settingsFold"
+                  open={appearanceOpen}
+                  onToggle={event => setAppearanceOpen(event.currentTarget.open)}
+                >
+                  <summary className="settingsFoldSummary">
+                    <span>Appearance</span>
+                  </summary>
+
+                  <div className="settingsFoldBody">
+                    <div className="settingRow settingRow-stacked">
+                      <div className="settingRowHeader">
+                        <strong>Glass tint</strong>
+                        <input
+                          className="colorInput"
+                          type="color"
+                          aria-label="Glass tint"
+                          value={glassTint}
+                          onChange={event => setGlassTint(event.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="settingRow settingRow-stacked">
+                      <div className="settingRowHeader">
+                        <strong>Glass opacity</strong>
+                        <span className="settingValue">{Math.round(glassOpacity * 100)}%</span>
+                      </div>
+                      <input
+                        className="rangeInput"
+                        type="range"
+                        min="0.12"
+                        max="0.96"
+                        step="0.01"
+                        aria-label="Glass opacity"
+                        value={glassOpacity}
+                        onChange={event => setGlassOpacity(Number(event.target.value))}
+                      />
+                    </div>
+
+                    <div className="settingRow settingRow-stacked">
+                      <div className="settingRowHeader">
+                        <strong>Glass blur</strong>
+                        <span className="settingValue">{glassBlur}px</span>
+                      </div>
+                      <input
+                        className="rangeInput"
+                        type="range"
+                        min="0"
+                        max="40"
+                        step="1"
+                        aria-label="Glass blur"
+                        value={glassBlur}
+                        onChange={event => setGlassBlur(Number(event.target.value))}
+                      />
+                    </div>
                   </div>
-                  <input
-                    className="rangeInput"
-                    type="range"
-                    min="0"
-                    max="40"
-                    step="1"
-                    aria-label="Glass blur"
-                    value={glassBlur}
-                    onChange={event => setGlassBlur(Number(event.target.value))}
-                  />
-                </div>
-              </div>
-            </details>
+                </details>
+              </>
+            )}
 
             {IS_TAURI ? (
               <details
@@ -3458,20 +3477,22 @@ function App() {
               </details>
             ) : null}
 
-            <div className="settingRow">
-              <strong>Launch at login</strong>
-              <button
-                className={launchAtLogin ? 'switch switch-on' : 'switch'}
-                role="switch"
-                aria-checked={launchAtLogin}
-                aria-label="Launch at login"
-                disabled={!launchAtLoginReady}
-                type="button"
-                onClick={toggleLaunchAtLogin}
-              >
-                <span className="switchKnob" />
-              </button>
-            </div>
+            {IS_ANDROID ? null : (
+              <div className="settingRow">
+                <strong>Launch at login</strong>
+                <button
+                  className={launchAtLogin ? 'switch switch-on' : 'switch'}
+                  role="switch"
+                  aria-checked={launchAtLogin}
+                  aria-label="Launch at login"
+                  disabled={!launchAtLoginReady}
+                  type="button"
+                  onClick={toggleLaunchAtLogin}
+                >
+                  <span className="switchKnob" />
+                </button>
+              </div>
+            )}
 
             {IS_TAURI ? (
               <div className="settingRow">
