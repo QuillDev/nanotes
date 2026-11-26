@@ -2624,6 +2624,22 @@ function App() {
               <path d="M5 12h14" />
             </svg>
           </button>
+          {IS_WINDOWS ? (
+            <button
+              className="topbarButton"
+              type="button"
+              aria-label="Hide overlay"
+              title={`Hide overlay (${appShortcutLabel('Q')})`}
+              onClick={() => {
+                void hideOverlay();
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
+            </button>
+          ) : null}
         </div>
       </header>
 
