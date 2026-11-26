@@ -1,6 +1,6 @@
 # Releasing NaNotes
 
-NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Windows (x64), and Linux (x86_64) in parallel via `.github/workflows/release.yml`. The workflow only runs when cutting a release (`v*` tag push or manual `workflow_dispatch`), keeping pull requests fast.
+NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Windows (x64), Linux (x86_64), and Android (arm64) in parallel via `.github/workflows/release.yml`. The workflow only runs when cutting a release (`v*` tag push or manual `workflow_dispatch`), keeping pull requests fast.
 
 ## Cutting a release
 
@@ -15,11 +15,12 @@ NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Wi
 
    You can also attach release builds to an existing tag from the GitHub Actions UI via **Release -> Run workflow** with the tag name (or leave the tag blank for a build-only check).
 
-3. The `Release` workflow builds all four targets in parallel and uploads the assets, updater signatures + `latest.json`, and `SHA256SUMS.txt` to the GitHub Release:
+3. The `Release` workflow builds all five targets in parallel and uploads the assets, updater signatures + `latest.json`, and `SHA256SUMS.txt` to the GitHub Release:
    - macOS Apple Silicon: `NaNotes_<version>_aarch64.app.tar.gz` (ad-hoc signed + updater `.sig`)
    - macOS Intel: `NaNotes_<version>_x64.app.tar.gz` (ad-hoc signed + updater `.sig`)
    - Windows x64: `NaNotes_<version>_x64-setup.exe` (NSIS installer + updater `.sig`)
    - Linux x86_64: `nanotes_<version>_linux_x86_64.tar.gz` (used by `install.sh`) and `.deb`
+   - Android arm64: `nanotes.apk`, kept under a fixed name so `releases/latest/download/nanotes.apk` always points at the newest build
    - In-app updater manifest: `latest.json` (signed with the `TAURI_SIGNING_PRIVATE_KEY` Actions secret, matching `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`)
 
 ## Automatic package manager updates
@@ -42,3 +43,7 @@ komac new QuillDev.nanotes \
 ```
 
 To automate future WinGet updates on every `v*` release tag, fork `microsoft/winget-pkgs` under `QuillDev` and add a GitHub PAT with `public_repo` scope as the `WINGET_TOKEN` Actions secret in `QuillDev/nanotes`.
+
+## Android signing
+
+Every APK must be signed with the same key, or Android refuses to install it over the previous version. The key is a PKCS12 keystore with alias `nanotes`, stored as two Actions secrets: `NANOTES_ANDROID_KEYSTORE_BASE64` (the keystore, base64) and `NANOTES_ANDROID_KEYSTORE_PASSWORD`. Never replace the key; keep a backup outside GitHub. The Android version code comes from the app version (`major * 1000000 + minor * 1000 + patch`), so every release must bump the version.

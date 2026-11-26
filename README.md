@@ -29,6 +29,7 @@ Press <kbd>⌥</kbd>+<kbd>N</kbd> on macOS or <kbd>Alt</kbd>+<kbd>N</kbd> on Lin
 - macOS (Apple Silicon or Intel)
 - Windows 10 or 11 (x64)
 - Linux (x86_64) or NixOS with a desktop session that can run Tauri/WebKitGTK apps
+- Android 7.0+ (arm64)
 
 ## Install
 
@@ -73,6 +74,14 @@ nix run github:QuillDev/nanotes
 ```
 
 For NixOS system flakes, add `github:QuillDev/nanotes` as an input and install `inputs.nanotes.packages.${pkgs.system}.default`.
+
+### Android
+
+On your phone, download and open the latest APK (allow installs from your browser when Android asks):
+
+https://github.com/QuillDev/nanotes/releases/latest/download/nanotes.apk
+
+To update, install the newer APK the same way; notes stay on the phone. Notes live in the app's private storage, so sign in to a sync server (Settings → Sync) to share them with your other machines.
 
 ### Build from source
 
