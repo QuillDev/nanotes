@@ -100,6 +100,10 @@ The bundled app is written to `src-tauri/target/release/bundle/macos/NaNotes.app
 
 On first launch NaNotes creates its notes folder at `~/.nanotes`. Change the location any time from settings; the folder is created if it doesn't exist.
 
+## Sync & MCP
+
+Run a self-hosted Bun + SQLite sync server with passkey authentication to sync notes across machines and expose a `/mcp` endpoint for AI agents. See [docs/SYNC.md](docs/SYNC.md).
+
 ## How notes are stored
 
 The notes folder is the single source of truth. NaNotes reads and writes ordinary `.md` files, one per note. The first line of a note is its title, and saving renames the file when that first line changes. Search is computed from the files on disk at query time, so notes you edit in other apps show up too. Deleting a note from the search list moves the file to the system Trash.
