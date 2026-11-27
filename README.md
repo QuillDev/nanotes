@@ -28,7 +28,7 @@ Press <kbd>⌥</kbd>+<kbd>N</kbd> on macOS or <kbd>Alt</kbd>+<kbd>N</kbd> on Lin
 
 - macOS (Apple Silicon or Intel)
 - Windows 10 or 11 (x64)
-- Linux (x86_64) or NixOS with a desktop session that can run Tauri/WebKitGTK apps
+- Linux (x86_64) with a desktop session
 - Android 7.0+ (arm64)
 
 ## Install
@@ -67,14 +67,6 @@ Run the curl one-liner to install the latest GitHub Release into `~/.local/bin`:
 curl -fsSL https://raw.githubusercontent.com/QuillDev/nanotes/main/install.sh | sh
 ```
 
-Or on Nix / NixOS via the flake:
-
-```bash
-nix run github:QuillDev/nanotes
-```
-
-For NixOS system flakes, add `github:QuillDev/nanotes` as an input and install `inputs.nanotes.packages.${pkgs.system}.default`.
-
 ### Android
 
 On your phone, download and open the latest APK (allow installs from your browser when Android asks):
@@ -91,10 +83,12 @@ If you'd rather build it yourself:
 git clone https://github.com/QuillDev/nanotes.git
 cd nanotes
 bun install
-bun run tauri:build
+bun install --cwd desktop
+bun run build
+cd desktop && ./node_modules/.bin/electron-builder --dir
 ```
 
-The bundled app is written to `src-tauri/target/release/bundle/macos/NaNotes.app`. Copy it into `/Applications` to install.
+The app is written to `desktop/dist/` (`mac*/NaNotes.app` on macOS; copy it into `/Applications`).
 
 ## Usage
 
@@ -121,22 +115,23 @@ The notes folder is the single source of truth. NaNotes reads and writes ordinar
 
 ```bash
 bun install
-bun run dev      # run the app with hot reload
+bun install --cwd desktop
+bun run dev      # build the UI and run the desktop app
 ```
+
+For hot reload, run `bun run dev:web` and start the desktop app with `NANOTES_DEV_URL=http://127.0.0.1:5174 bun run --cwd desktop start`.
 
 Verify a change before committing:
 
 ```bash
-bun run check                                    # type-check + build the UI
-bunx playwright install chromium webkit           # browser-test prerequisites
-bun run test:editor                               # ghost-text/editing regressions
-cargo check --manifest-path src-tauri/Cargo.toml # check the Rust shell
-cargo test  --manifest-path src-tauri/Cargo.toml # run the Rust tests
+bun run check                           # typecheck, lint, doctor, tests (incl. desktop) and builds
+bunx playwright install chromium webkit  # browser-test prerequisites
+bun run test:editor                      # ghost-text/editing regressions
 ```
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md). In short: the Rust/Tauri shell owns platform behavior (window, global hotkey, file I/O), while the React app owns the portable editor, autosave, and settings.
+See [docs/architecture.md](docs/architecture.md). In short: the Electron shell in `desktop/` owns platform behavior (window, global hotkey, file I/O, updates), while the React app owns the portable editor, autosave, and settings. Android still uses the Tauri app in `src-tauri/`.
 
 NaNotes is macOS-first today. Linux is a possible future shell target — see the architecture doc for the roadmap.
 

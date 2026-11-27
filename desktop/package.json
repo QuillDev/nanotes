@@ -1,0 +1,78 @@
+{
+  "name": "nanotes-desktop",
+  "productName": "NaNotes",
+  "desktopName": "nanotes.desktop",
+  "version": "0.0.0",
+  "description": "A floating Markdown scratchpad backed by local files",
+  "private": true,
+  "type": "module",
+  "main": "src/main.js",
+  "author": "QuillDev",
+  "homepage": "https://github.com/QuillDev/nanotes",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "build": {
+    "appId": "moe.quill.nanotes",
+    "productName": "NaNotes",
+    "executableName": "nanotes",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**",
+      "pubkey.txt",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist",
+        "to": "app"
+      }
+    ],
+    "asar": true,
+    "artifactName": "nanotes-${version}-${arch}.${ext}",
+    "linux": {
+      "target": [
+        "deb"
+      ],
+      "icon": "icons/icon.png",
+      "category": "Utility",
+      "synopsis": "A floating Markdown scratchpad backed by local files",
+      "maintainer": "QuillDev"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "icons/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "artifactName": "NaNotes_${version}_x64-setup.${ext}",
+      "include": "packaging/installer.nsh"
+    },
+    "mac": {
+      "target": [
+        "dir"
+      ],
+      "icon": "icons/icon.icns",
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "minimumSystemVersion": "11.0",
+      "extendInfo": {
+        "LSUIElement": true
+      }
+    }
+  },
+  "dependencies": {
+    "blakejs": "^1.2.1"
+  },
+  "devDependencies": {
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0"
+  }
+}

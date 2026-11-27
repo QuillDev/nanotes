@@ -4,9 +4,9 @@ NaNotes separates platform shell behavior from local note-file semantics.
 
 ## Platform shell
 
-Tauri owns window creation, hotkey registration, and native file access. The React app should not assume macOS-only APIs directly; platform-specific behavior belongs in the Rust shell or a small adapter layer.
+The desktop shell (`desktop/`, Electron) owns window creation, hotkey registration, and native file access. It exposes the same command bridge the earlier Tauri app had (`window.__TAURI_INTERNALS__`), so the React app calls `@tauri-apps/api` the same way on desktop and on Android, which still runs the Tauri app in `src-tauri/`. The React app should not assume macOS-only APIs directly; platform-specific behavior belongs in the shell.
 
-NaNotes runs like a lightweight background utility rather than a document app: it starts hidden, stays out of the Dock/taskbar, and registers a global shortcut so the note overlay opens on demand. Login startup is handled through Tauri's autostart plugin instead of a hand-written LaunchAgent.
+NaNotes runs like a lightweight background utility rather than a document app: it starts hidden, stays out of the Dock/taskbar, and registers a global shortcut so the note overlay opens on demand. Login startup uses the system's login items on macOS and Windows and an XDG autostart entry on Linux.
 
 - global hotkey registration
 - always-on-top overlay window configuration
@@ -30,4 +30,4 @@ The notes folder remains canonical. NaNotes reads/writes normal `.md` files, one
 
 ## Linux roadmap
 
-Linux support should be a shell target, not a rewrite of note semantics. Likely options are Tauri on Linux first, with platform-specific handling for global shortcuts and always-on-top behavior under X11/Wayland.
+Linux is a shell target, not a rewrite of note semantics. The Electron shell registers the global hotkey on X11; Wayland compositors may block global shortcuts.
