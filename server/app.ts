@@ -359,14 +359,18 @@ export function createApp(options: AppOptions): {
       return handleMcp(req, notes, passkeys, clock);
     }
     if (url.pathname.startsWith("/api/")) return api(req, url);
-    if (webDistDir && (url.pathname === "/assets/web-app.js" || url.pathname === "/assets/web-app.css")) {
+    if (webDistDir && url.pathname.startsWith("/assets/")) {
       const fileName = url.pathname.slice("/assets/".length);
-      const fullPath = join(webDistDir, fileName);
-      if (existsSync(fullPath)) {
-        const contentType = fileName.endsWith(".css") ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8";
-        return new Response(Bun.file(fullPath), {
-          headers: { "content-type": contentType, "cache-control": "no-cache" },
-        });
+      if (/^[A-Za-z0-9._-]+\.(js|css)$/.test(fileName) && !fileName.includes("..")) {
+        const fullPath = join(webDistDir, fileName);
+        if (existsSync(fullPath)) {
+          const contentType = fileName.endsWith(".css") ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8";
+          const isEntry = fileName === "web-app.js" || fileName === "web-app.css";
+          const cacheControl = isEntry ? "no-cache" : "public, max-age=31536000, immutable";
+          return new Response(Bun.file(fullPath), {
+            headers: { "content-type": contentType, "cache-control": cacheControl },
+          });
+        }
       }
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {

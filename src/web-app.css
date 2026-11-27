@@ -424,6 +424,31 @@ input:focus {
 }
 
 @media (max-width: 720px) {
+  .topbar {
+    gap: 6px;
+    padding: 0 8px;
+  }
+
+  .topbarLeft,
+  .topbarRight {
+    gap: 4px;
+  }
+
+  .topbar .btn {
+    height: 32px;
+    padding: 0 10px;
+    font-size: 12.5px;
+  }
+
+  .topbar .btn-ghost {
+    padding: 0 7px;
+  }
+
+  .brand {
+    font-size: 16px;
+    gap: 6px;
+  }
+
   .menuToggle {
     display: inline-flex;
     align-items: center;

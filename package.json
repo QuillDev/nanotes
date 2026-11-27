@@ -14,7 +14,7 @@
     "dev": "tauri dev",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
-    "build:web": "bun build src/web-app.tsx --outdir dist-web --target browser --minify",
+    "build:web": "bun -e \"require('node:fs').rmSync('dist-web',{recursive:true,force:true})\" && bun build src/web-app.tsx --outdir dist-web --target browser --minify --splitting --define 'process.env.NODE_ENV=\"production\"'",
     "tauri:build": "tauri build",
     "server": "bun run server/main.ts",
     "server:setup-link": "bun run server/setup-link.ts",
