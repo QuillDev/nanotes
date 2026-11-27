@@ -26,7 +26,7 @@ function buildServer(notes: NotesStore, passkeys: Passkeys | null, clock: () => 
         limit: z.number().int().min(1).max(500).optional(),
       },
     },
-    ({ limit }) => json({ rev: notes.currentRev(), notes: notes.list(undefined, limit ?? 200) }),
+    ({ limit }) => json(notes.listWithRev(undefined, limit ?? 200)),
   );
 
   server.registerTool(

@@ -8,6 +8,7 @@ const LOGIN_FAILURE_LIMIT = 10;
 const PAIRING_TTL_MS = 5 * 60 * 1000;
 const PAIRING_WINDOW_MS = 5 * 60 * 1000;
 const PAIRING_LIMIT = 20;
+const DEVICE_LAST_USED_UPDATE_MS = 60 * 1000;
 
 export interface AuthOptions {
   /** Optional Argon2 password hash (`bun -e 'console.log(await Bun.password.hash("..."))'`). */
@@ -102,11 +103,15 @@ export class Auth {
     if (!trimmed) return null;
     const hash = hashToken(trimmed);
     const row = this.database
-      .query<{ id: string; name: string }, [string]>("SELECT id, name FROM device_tokens WHERE token_hash = ?")
+      .query<{ id: string; name: string; last_used_at: number | null }, [string]>(
+        "SELECT id, name, last_used_at FROM device_tokens WHERE token_hash = ?",
+      )
       .get(hash);
     if (!row) return null;
-    this.database.query("UPDATE device_tokens SET last_used_at = ? WHERE id = ?").run(now, row.id);
-    return row;
+    if (row.last_used_at === null || now - row.last_used_at >= DEVICE_LAST_USED_UPDATE_MS) {
+      this.database.query("UPDATE device_tokens SET last_used_at = ? WHERE id = ?").run(now, row.id);
+    }
+    return { id: row.id, name: row.name };
   }
 
   hasDeviceToken(req: Request, now: number): boolean {

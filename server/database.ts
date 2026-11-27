@@ -62,11 +62,16 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE notes ADD COLUMN yjs_state BLOB;
   `,
+  `
+  CREATE INDEX IF NOT EXISTS notes_active_order
+    ON notes (pinned DESC, updated_at DESC)
+    WHERE deleted_at IS NULL;
+  `,
 ];
 
 export function openDatabase(path: string): Database {
   const database = new Database(path, { create: true });
-  database.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+  database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
   const version = (database.query("PRAGMA user_version").get() as { user_version: number }).user_version;
   for (let index = version; index < MIGRATIONS.length; index += 1) {
     database.transaction(() => {
