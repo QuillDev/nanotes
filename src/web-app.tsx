@@ -9,6 +9,9 @@ import {
 import { Button, Input } from "nakomponents";
 import { Pin, X } from "lucide-react";
 import { TokenLabelDialog } from "./components/TokenLabelDialog";
+import { apiClient, failure, segment } from "./lib/api";
+import type { DeviceInfo } from "../server/auth.ts";
+import type { NoteSummary } from "../server/notes.ts";
 import "./web-app.css";
 
 const loadLiveNoteEditor = () => import("./web-editor");
@@ -44,28 +47,9 @@ class EditorErrorBoundary extends React.Component<
   }
 }
 
-interface LoginMethods {
-  passkey: boolean;
-  passkeyConfigured: boolean;
-  password: boolean;
-}
+const api = apiClient(window.location.origin);
 
-interface DeviceInfo {
-  id: string;
-  name: string;
-  createdAt: number;
-  lastUsedAt: number | null;
-}
-
-interface NoteSummary {
-  id: string;
-  path: string;
-  title: string;
-  pinned: boolean;
-  rev: number;
-  updatedAt: number;
-  size: number;
-}
+type LoginMethods = NonNullable<Awaited<ReturnType<typeof api.login.methods.get>>["data"]>;
 
 type Route =
   | { kind: "home" }
@@ -95,17 +79,6 @@ function bytesToB64url(buffer: ArrayBuffer): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]!);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function api<T = Record<string, unknown>>(
-  path: string,
-  init: RequestInit = {},
-): Promise<{ ok: boolean; status: number; data: T }> {
-  const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) };
-  if (init.body && !headers["content-type"]) headers["content-type"] = "application/json";
-  const res = await fetch(path, { credentials: "same-origin", ...init, headers });
-  const data = (await res.json().catch(() => ({}))) as T;
-  return { ok: res.ok, status: res.status, data };
 }
 
 function sortNotes(list: NoteSummary[]): NoteSummary[] {
@@ -164,16 +137,16 @@ function WebApp() {
   const loadSession = React.useCallback(async () => {
     setLoading(true);
     const [methodsRes, devicesRes, notesRes] = await Promise.all([
-      api<LoginMethods>("/api/login/methods"),
-      api<{ devices: DeviceInfo[] }>("/api/devices"),
-      api<{ notes: NoteSummary[] }>("/api/notes"),
+      api.login.methods.get(),
+      api.devices.get(),
+      api.notes.get(),
     ]);
-    if (methodsRes.ok) setMethods(methodsRes.data);
-    if (devicesRes.ok) {
+    if (methodsRes.data) setMethods(methodsRes.data);
+    if (devicesRes.data) {
       void loadLiveNoteEditor().catch(() => {});
       setSignedIn(true);
-      setDevices(devicesRes.data.devices ?? []);
-      const list = sortNotes(notesRes.ok ? (notesRes.data.notes ?? []) : []);
+      setDevices(devicesRes.data.devices);
+      const list = sortNotes(notesRes.data?.notes ?? []);
       setNotes(list);
       setActiveNoteId((prev) => (prev && list.some((n) => n.id === prev) ? prev : (list[0]?.id ?? null)));
     } else {
@@ -280,25 +253,9 @@ function WebApp() {
     async (token: string) => {
       setError("");
       setMessage("");
-      const opts = await api<{
-        challengeId: string;
-        publicKey: {
-          challenge: string;
-          rp: PublicKeyCredentialRpEntity;
-          user: { id: string; name: string; displayName: string };
-          pubKeyCredParams: PublicKeyCredentialParameters[];
-          excludeCredentials?: { id: string; type: PublicKeyCredentialType }[];
-          authenticatorSelection?: AuthenticatorSelectionCriteria;
-          timeout?: number;
-          attestation?: AttestationConveyancePreference;
-        };
-        error?: string;
-      }>("/api/passkeys/register/options", {
-        method: "POST",
-        body: JSON.stringify({ setup: token }),
-      });
-      if (!opts.ok) {
-        setError(opts.data.error || "Invalid or expired link");
+      const opts = await api.passkeys.register.options.post({ setup: token });
+      if (!opts.data) {
+        setError(failure(opts.error, "Invalid or expired link"));
         return;
       }
       try {
@@ -316,19 +273,16 @@ function WebApp() {
         })) as PublicKeyCredential | null;
         if (!cred) return;
         const response = cred.response as AuthenticatorAttestationResponse;
-        const finish = await api<{ error?: string }>("/api/passkeys/register", {
-          method: "POST",
-          body: JSON.stringify({
-            challengeId: opts.data.challengeId,
-            credential: {
-              id: bytesToB64url(cred.rawId),
-              clientDataJSON: bytesToB64url(response.clientDataJSON),
-              attestationObject: bytesToB64url(response.attestationObject),
-            },
-          }),
+        const finish = await api.passkeys.register.post({
+          challengeId: opts.data.challengeId,
+          credential: {
+            id: bytesToB64url(cred.rawId),
+            clientDataJSON: bytesToB64url(response.clientDataJSON),
+            attestationObject: bytesToB64url(response.attestationObject),
+          },
         });
-        if (!finish.ok) {
-          setError(finish.data.error || "Passkey registration failed");
+        if (finish.error) {
+          setError(failure(finish.error, "Passkey registration failed"));
           return;
         }
         window.location.hash = "#/";
@@ -343,19 +297,9 @@ function WebApp() {
 
   const signInPasskey = React.useCallback(async () => {
     setError("");
-    const opts = await api<{
-      challengeId: string;
-      publicKey: {
-        challenge: string;
-        rpId: string;
-        allowCredentials?: { id: string; type: PublicKeyCredentialType }[];
-        userVerification?: UserVerificationRequirement;
-        timeout?: number;
-      };
-      error?: string;
-    }>("/api/passkeys/login/options", { method: "POST", body: "{}" });
-    if (!opts.ok) {
-      setError(opts.data.error || "Could not start passkey sign-in");
+    const opts = await api.passkeys.login.options.post();
+    if (!opts.data) {
+      setError(failure(opts.error, "Could not start passkey sign-in"));
       return;
     }
     try {
@@ -372,20 +316,17 @@ function WebApp() {
       })) as PublicKeyCredential | null;
       if (!cred) return;
       const response = cred.response as AuthenticatorAssertionResponse;
-      const finish = await api<{ error?: string }>("/api/passkeys/login", {
-        method: "POST",
-        body: JSON.stringify({
-          challengeId: opts.data.challengeId,
-          credential: {
-            id: bytesToB64url(cred.rawId),
-            clientDataJSON: bytesToB64url(response.clientDataJSON),
-            authenticatorData: bytesToB64url(response.authenticatorData),
-            signature: bytesToB64url(response.signature),
-          },
-        }),
+      const finish = await api.passkeys.login.post({
+        challengeId: opts.data.challengeId,
+        credential: {
+          id: bytesToB64url(cred.rawId),
+          clientDataJSON: bytesToB64url(response.clientDataJSON),
+          authenticatorData: bytesToB64url(response.authenticatorData),
+          signature: bytesToB64url(response.signature),
+        },
       });
-      if (!finish.ok) {
-        setError(finish.data.error || "Passkey sign-in failed");
+      if (finish.error) {
+        setError(failure(finish.error, "Passkey sign-in failed"));
         return;
       }
       await loadSession();
@@ -396,15 +337,12 @@ function WebApp() {
 
   const createToken = React.useCallback(
     async (name: string) => {
-      const res = await api<{ token?: string; error?: string }>("/api/devices", {
-        method: "POST",
-        body: JSON.stringify({ name }),
-      });
-      if (!res.ok) {
-        setError(res.data.error || "Could not create token");
+      const res = await api.devices.post({ name });
+      if (!res.data) {
+        setError(failure(res.error, "Could not create token"));
         return;
       }
-      setNewToken(res.data.token ?? null);
+      setNewToken(res.data.token);
       await loadSession();
     },
     [loadSession],
@@ -412,28 +350,24 @@ function WebApp() {
 
   const createNote = React.useCallback(async () => {
     setError("");
-    const res = await api<NoteSummary & { error?: string }>("/api/notes", {
-      method: "POST",
-      body: JSON.stringify({ content: "# Untitled\n\n" }),
-    });
-    if (!res.ok) {
-      setError(res.data.error || "Could not create note");
+    const res = await api.notes.post({ content: "# Untitled\n\n" });
+    if (!res.data) {
+      setError(failure(res.error, "Could not create note"));
       return;
     }
+    const { content, ...created } = res.data;
+    const summary: NoteSummary = { ...created, size: new TextEncoder().encode(content).length };
     setShowDevices(false);
     setSidebarOpen(false);
-    setNotes((prev) => sortNotes([res.data, ...prev.filter((n) => n.id !== res.data.id)]));
-    setActiveNoteId(res.data.id);
+    setNotes((prev) => sortNotes([summary, ...prev.filter((n) => n.id !== summary.id)]));
+    setActiveNoteId(summary.id);
   }, []);
 
   const togglePin = React.useCallback(async (note: NoteSummary) => {
     setError("");
-    const res = await api<{ error?: string }>(`/api/notes/${encodeURIComponent(note.id)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ pinned: !note.pinned }),
-    });
-    if (!res.ok) {
-      setError(res.data.error || "Could not update pin state");
+    const res = await api.notes({ id: segment(note.id) }).patch({ pinned: !note.pinned });
+    if (res.error) {
+      setError(failure(res.error, "Could not update pin state"));
     }
   }, []);
 
@@ -443,9 +377,9 @@ function WebApp() {
   const removeNote = React.useCallback(
     async (note: NoteSummary) => {
       setError("");
-      const res = await api<{ error?: string }>(`/api/notes/${encodeURIComponent(note.id)}`, { method: "DELETE" });
-      if (!res.ok) {
-        setError(res.data.error || "Could not delete note");
+      const res = await api.notes({ id: segment(note.id) }).delete();
+      if (res.error) {
+        setError(failure(res.error, "Could not delete note"));
         return;
       }
       const nextNotes = notesRef.current.filter((item) => item.id !== note.id);
@@ -529,12 +463,9 @@ function WebApp() {
                 onSubmit={async (event) => {
                   event.preventDefault();
                   setError("");
-                  const res = await api<{ error?: string }>("/api/login", {
-                    method: "POST",
-                    body: JSON.stringify({ password }),
-                  });
-                  if (!res.ok) {
-                    setError(res.data.error || "Sign in failed");
+                  const res = await api.login.post({ password });
+                  if (res.error) {
+                    setError(failure(res.error, "Sign in failed"));
                     return;
                   }
                   setPassword("");
@@ -584,15 +515,12 @@ function WebApp() {
                 onClick={async () => {
                   setError("");
                   setMessage("");
-                  const res = await api<{ device?: DeviceInfo; error?: string }>("/api/device/approve", {
-                    method: "POST",
-                    body: JSON.stringify({ code: route.code }),
-                  });
-                  if (!res.ok) {
-                    setError(res.data.error || "Could not approve device");
+                  const res = await api.device.approve.post({ code: route.code });
+                  if (!res.data) {
+                    setError(failure(res.error, "Could not approve device"));
                     return;
                   }
-                  setMessage(`Approved ${res.data.device?.name || "device"}. You can return to nanotes.`);
+                  setMessage(`Approved ${res.data.device.name || "device"}. You can return to nanotes.`);
                   window.location.hash = "#/";
                   await loadSession();
                 }}
@@ -652,7 +580,7 @@ function WebApp() {
           <Button size="sm" variant="ghost"
             type="button"
             onClick={async () => {
-              await api("/api/logout", { method: "POST", body: "{}" });
+              await api.logout.post();
               setSignedIn(false);
               setNotes([]);
               setActiveNoteId(null);
@@ -691,12 +619,9 @@ function WebApp() {
                 <Button size="sm" variant="ghost"
                   type="button"
                   onClick={async () => {
-                    const res = await api<{ url?: string; error?: string }>("/api/passkeys/setup-link", {
-                      method: "POST",
-                      body: "{}",
-                    });
-                    if (!res.ok) {
-                      setError(res.data.error || "Passkeys not configured");
+                    const res = await api.passkeys["setup-link"].post();
+                    if (!res.data) {
+                      setError(failure(res.error, "Passkeys not configured"));
                       return;
                     }
                     setMessage(`One-time passkey setup link: ${res.data.url}`);
@@ -731,21 +656,13 @@ function WebApp() {
                           const trimmed = editingDeviceName.trim();
                           if (!trimmed) return;
                           setError("");
-                          const res = await api<{ device?: DeviceInfo; error?: string }>(
-                            `/api/devices/${encodeURIComponent(device.id)}`,
-                            {
-                              method: "PATCH",
-                              body: JSON.stringify({ name: trimmed }),
-                            },
-                          );
-                          if (!res.ok) {
-                            setError(res.data.error || "Could not rename device");
+                          const res = await api.devices({ id: segment(device.id) }).patch({ name: trimmed });
+                          if (!res.data) {
+                            setError(failure(res.error, "Could not rename device"));
                             return;
                           }
-                          if (res.data.device) {
-                            const updated = res.data.device;
-                            setDevices((prev) => prev.map((item) => (item.id === device.id ? updated : item)));
-                          }
+                          const updated = res.data.device;
+                          setDevices((prev) => prev.map((item) => (item.id === device.id ? updated : item)));
                           setEditingDeviceId(null);
                         }}
                       >
@@ -794,7 +711,7 @@ function WebApp() {
                           <Button size="sm" variant="ghost"
                             type="button"
                             onClick={async () => {
-                              await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
+                              await api.devices({ id: segment(device.id) }).delete();
                               await loadSession();
                             }}
                           >

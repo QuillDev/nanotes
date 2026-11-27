@@ -104,6 +104,14 @@
         "rules": [
           "react-doctor/async-await-in-loop"
         ]
+      },
+      {
+        "files": [
+          "src/web-app.tsx"
+        ],
+        "rules": [
+          "react-doctor/no-async-event-handler-without-reentry-guard"
+        ]
       }
     ]
   }
