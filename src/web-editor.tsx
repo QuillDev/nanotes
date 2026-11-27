@@ -3,11 +3,12 @@ import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { EditorState, type Text } from "@codemirror/state";
-import { drawSelection, EditorView, keymap, placeholder as cmPlaceholder } from "@codemirror/view";
+import type { Extension, Text } from "@codemirror/state";
+import { drawSelection, EditorView, keymap } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
-import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import type { NoteCollabSession } from "./collab";
+import { CollabEditor } from "./editor/CollabEditor";
+import { codeSyntaxHighlightSpecs } from "./editor/highlight";
 
 const webHighlight = HighlightStyle.define([
   { tag: tags.heading1, color: "#ffffff", fontSize: "1.45em", fontWeight: "700" },
@@ -22,6 +23,7 @@ const webHighlight = HighlightStyle.define([
   { tag: tags.quote, color: "#b5bbcf", fontStyle: "italic" },
   { tag: tags.meta, color: "#686e85" },
   { tag: tags.processingInstruction, color: "#686e85" },
+  ...codeSyntaxHighlightSpecs,
 ]);
 
 const webEditorTheme = EditorView.theme(
@@ -66,51 +68,37 @@ export default function LiveNoteEditor({
   session: NoteCollabSession;
   onTitleChange?: (title: string) => void;
 }) {
-  const containerRef = React.useRef<HTMLDivElement | null>(null);
   const onTitleChangeRef = React.useRef(onTitleChange);
   onTitleChangeRef.current = onTitleChange;
+  const lastTitleRef = React.useRef<string | null>(null);
 
   React.useLayoutEffect(() => {
-    const parent = containerRef.current;
-    if (!parent) return;
-
-    const state = EditorState.create({
-      doc: session.ytext.toString(),
-      extensions: [
-        drawSelection(),
-        cmPlaceholder("Start typing…"),
-        keymap.of([...defaultKeymap, ...yUndoManagerKeymap]),
-        markdown({ codeLanguages: languages }),
-        syntaxHighlighting(webHighlight),
-        EditorView.lineWrapping,
-        webEditorTheme,
-        EditorView.updateListener.of((vu) => {
-          if (vu.docChanged) {
-            const nextTitle = titleFromDoc(vu.state.doc);
-            if (nextTitle !== lastTitle) {
-              lastTitle = nextTitle;
-              onTitleChangeRef.current?.(nextTitle);
-            }
-          }
-        }),
-        yCollab(session.ytext, session.awareness, { undoManager: session.undoManager }),
-      ],
-    });
-
-    let lastTitle = titleFromDoc(state.doc);
-    const view = new EditorView({ state, parent });
-    // y-codemirror.next initializes remote selection decorations empty until the first view update;
-    // nudge the view on mount so peers already in the room appear immediately.
-    const raf = requestAnimationFrame(() => {
-      if (session.awareness.getStates().size > 1) {
-        view.dispatch({});
-      }
-    });
-    return () => {
-      cancelAnimationFrame(raf);
-      view.destroy();
-    };
+    lastTitleRef.current = null;
   }, [session]);
 
-  return <div className="editorHost" ref={containerRef} />;
+  const baseExtensions = React.useMemo<Extension[]>(
+    () => [
+      drawSelection(),
+      keymap.of(defaultKeymap),
+      markdown({ codeLanguages: languages }),
+      syntaxHighlighting(webHighlight),
+      EditorView.lineWrapping,
+      webEditorTheme,
+      EditorView.updateListener.of((vu) => {
+        if (lastTitleRef.current === null) {
+          lastTitleRef.current = titleFromDoc(vu.startState.doc);
+        }
+        if (vu.docChanged) {
+          const nextTitle = titleFromDoc(vu.state.doc);
+          if (nextTitle !== lastTitleRef.current) {
+            lastTitleRef.current = nextTitle;
+            onTitleChangeRef.current?.(nextTitle);
+          }
+        }
+      }),
+    ],
+    [],
+  );
+
+  return <CollabEditor className="editorHost" session={session} baseExtensions={baseExtensions} />;
 }

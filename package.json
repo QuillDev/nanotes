@@ -19,7 +19,9 @@
     "server": "bun run server/main.ts",
     "server:setup-link": "bun run server/setup-link.ts",
     "typecheck:server": "tsc -p tsconfig.server.json",
+    "test": "bun test tests/",
     "test:server": "bun test tests/server.test.ts",
+    "test:collab": "bun test tests/collab.test.ts",
     "check": "tsc && vite build && bun run build:web && tsc -p tsconfig.server.json",
     "test:editor": "node scripts/test-editor.mjs"
   },
