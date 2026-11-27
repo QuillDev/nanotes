@@ -11,6 +11,37 @@ import "./web-app.css";
 const loadLiveNoteEditor = () => import("./web-editor");
 const LiveNoteEditor = React.lazy(loadLiveNoteEditor);
 
+class EditorErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="editorEmpty">
+          <div className="stack" style={{ justifyItems: "center" }}>
+            <div>The editor could not load. A new version may have been deployed.</div>
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={() => window.location.reload()}
+            >
+              Reload
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 interface LoginMethods {
   passkey: boolean;
   passkeyConfigured: boolean;
@@ -136,7 +167,7 @@ function WebApp() {
     ]);
     if (methodsRes.ok) setMethods(methodsRes.data);
     if (devicesRes.ok) {
-      void loadLiveNoteEditor();
+      void loadLiveNoteEditor().catch(() => {});
       setSignedIn(true);
       setDevices(devicesRes.data.devices ?? []);
       const list = sortNotes(notesRes.ok ? (notesRes.data.notes ?? []) : []);
@@ -842,18 +873,20 @@ function WebApp() {
               </div>
             ) : null}
             {liveSession ? (
-              <React.Suspense fallback={<div className="editorEmpty">Loading editor…</div>}>
-                <LiveNoteEditor
-                  key={liveSession.noteId}
-                  session={liveSession}
-                  onTitleChange={(title) => {
-                    const id = liveSession.noteId;
-                    setNotes((prev) =>
-                      prev.map((item) => (item.id === id && item.title !== title ? { ...item, title } : item)),
-                    );
-                  }}
-                />
-              </React.Suspense>
+              <EditorErrorBoundary key={liveSession.noteId}>
+                <React.Suspense fallback={<div className="editorEmpty">Loading editor…</div>}>
+                  <LiveNoteEditor
+                    key={liveSession.noteId}
+                    session={liveSession}
+                    onTitleChange={(title) => {
+                      const id = liveSession.noteId;
+                      setNotes((prev) =>
+                        prev.map((item) => (item.id === id && item.title !== title ? { ...item, title } : item)),
+                      );
+                    }}
+                  />
+                </React.Suspense>
+              </EditorErrorBoundary>
             ) : activeNoteId ? (
               <div className="editorEmpty">Connecting to live note…</div>
             ) : (
