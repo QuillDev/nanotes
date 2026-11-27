@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -7,6 +7,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from "y-protoc
 import { base64ToBytes, bytesToBase64 } from "../shared/text-diff.ts";
 import { createApp } from "../server/app.ts";
 import { b64url, ES256 } from "../server/webauthn.ts";
+import { engines, releaseTestDatabases, testDatabase } from "./databases.ts";
 
 /** Minimal CBOR encoder for generating real WebAuthn test credentials (ES256). */
 function cborUint(major: number, n: number): Uint8Array {
@@ -69,12 +70,14 @@ function extractCookie(res: Response): string {
   return raw.split(";")[0] ?? "";
 }
 
-describe("nanotes sync server", () => {
+afterAll(releaseTestDatabases);
+
+describe.each(engines())("nanotes sync server on %s", (engine) => {
   test("passkey registration, login, and desktop device pairing work end to end", async () => {
     let now = 1_700_000_000_000;
     const origin = "https://notes.example.com";
-    const app = createApp({
-      databasePath: ":memory:",
+    const app = await createApp({
+      databasePath: await testDatabase(engine),
       passwordHash: null,
       mcpToken: "mcp-secret",
       secureCookies: true,
@@ -98,7 +101,7 @@ describe("nanotes sync server", () => {
         )) as Response;
 
       // 1. Mint one-time passkey setup link and register an ES256 passkey.
-      const setup = app.passkeys!.createSetupLink(now);
+      const setup = await app.passkeys!.createSetupLink(now);
       const regOptsRes = await req("/api/passkeys/register/options", {
         method: "POST",
         body: JSON.stringify({ setup: setup.token }),
@@ -228,14 +231,14 @@ describe("nanotes sync server", () => {
       });
       expect(syncRevoked.status).toBe(401);
     } finally {
-      app.close();
+      await app.close();
     }
   });
 
   test("multi-device sync pushes, pulls, detects conflicts, and tombstones deletes", async () => {
     let now = 1_700_000_000_000;
-    const app = createApp({
-      databasePath: ":memory:",
+    const app = await createApp({
+      databasePath: await testDatabase(engine),
       passwordHash: null,
       mcpToken: null,
       secureCookies: false,
@@ -244,7 +247,7 @@ describe("nanotes sync server", () => {
     });
 
     try {
-      const { token } = app.auth.createDeviceToken("Laptop", now);
+      const { token } = await app.auth.createDeviceToken("Laptop", now);
       const syncReq = (path: string, init: RequestInit = {}) =>
         app.fetch(
           new Request(`http://localhost${path}`, {
@@ -312,13 +315,13 @@ describe("nanotes sync server", () => {
       expect(pullDelete.rev).toBe(3);
       expect(pullDelete.changes[0]?.deletedAt).not.toBeNull();
     } finally {
-      app.close();
+      await app.close();
     }
   });
 
   test("MCP endpoint exposes note CRUD + passkey_setup_link and bumps sync revisions", async () => {
-    const app = createApp({
-      databasePath: ":memory:",
+    const app = await createApp({
+      databasePath: await testDatabase(engine),
       passwordHash: null,
       mcpToken: "super-secret-mcp-token",
       secureCookies: false,
@@ -384,20 +387,20 @@ describe("nanotes sync server", () => {
       expect(deleted["deleted"]).toBe(true);
 
       // Sync clients pulling since 0 see the tombstone from the MCP delete.
-      const changes = app.notes.changesSince(0);
+      const changes = await app.notes.changesSince(0);
       expect(changes.rev).toBe(3);
       expect(changes.changes[0]?.deletedAt).not.toBeNull();
 
       await client.close();
     } finally {
       server.stop(true);
-      app.close();
+      await app.close();
     }
   });
 
   test("live Yjs WebSocket collab merges concurrent edits, offline divergence, awareness cursors, and MCP updates", async () => {
-    const app = createApp({
-      databasePath: ":memory:",
+    const app = await createApp({
+      databasePath: await testDatabase(engine),
       passwordHash: null,
       mcpToken: "mcp-live-secret",
       secureCookies: false,
@@ -468,9 +471,9 @@ describe("nanotes sync server", () => {
 
     try {
       const now = 1_700_000_000_000;
-      const deviceA = app.auth.createDeviceToken("Windows", now);
-      const deviceB = app.auth.createDeviceToken("macOS", now);
-      const note = app.notes.create({ content: "# Project\n\nAlpha\nBeta\n" }, now);
+      const deviceA = await app.auth.createDeviceToken("Windows", now);
+      const deviceB = await app.auth.createDeviceToken("macOS", now);
+      const note = await app.notes.create({ content: "# Project\n\nAlpha\nBeta\n" }, now);
 
       // 1. Invalid token is rejected with 4401.
       const bad = await connectWs();
@@ -521,7 +524,7 @@ describe("nanotes sync server", () => {
       expect(textB.toString()).toBe(expectedMerged);
 
       // Reading via NotesStore (e.g. MCP read_note) flushes the dirty room synchronously.
-      const stored = app.notes.get(note.id);
+      const stored = await app.notes.get(note.id);
       expect(stored?.content).toBe(expectedMerged);
 
       // 4. Awareness (live cursors) broadcasts to peers and clears on disconnect.
@@ -538,7 +541,7 @@ describe("nanotes sync server", () => {
       expect(awareB.getStates().get(docA.clientID)?.["user"]?.["name"]).toBe("Windows");
 
       // 5. MCP append_note streams live Yjs delta directly to connected peers without clobbering.
-      const appended = app.notes.append(note.id, "Gamma (from MCP)", now + 100);
+      const appended = await app.notes.append(note.id, "Gamma (from MCP)", now + 100);
       expect(appended?.content).toBe(`${expectedMerged}Gamma (from MCP)`);
 
       const mcpUpdateA = await peerA.nextMsg((m) => m["type"] === "yjs-update");
@@ -581,7 +584,7 @@ describe("nanotes sync server", () => {
       const expectedOfflineMerged = `Live ${expectedMerged}Gamma (from MCP)\nOffline line`;
       expect(textA.toString()).toBe(expectedOfflineMerged);
       expect(textB.toString()).toBe(expectedOfflineMerged);
-      expect(app.notes.get(note.id)?.content).toBe(expectedOfflineMerged);
+      expect((await app.notes.get(note.id))?.content).toBe(expectedOfflineMerged);
 
       awareA.destroy();
       awareB.destroy();
@@ -592,14 +595,14 @@ describe("nanotes sync server", () => {
       docB.destroy();
     } finally {
       server.stop(true);
-      app.close();
+      await app.close();
     }
   });
 
   test("continuous collab typing flushes note-changed before typing stops", async () => {
     const now = 1_700_000_200_000;
-    const app = createApp({
-      databasePath: ":memory:",
+    const app = await createApp({
+      databasePath: await testDatabase(engine),
       passwordHash: null,
       mcpToken: null,
       secureCookies: false,
@@ -607,8 +610,8 @@ describe("nanotes sync server", () => {
       clock: () => now,
       flushDebounceMs: 120,
     });
-    const device = app.auth.createDeviceToken("Desktop", now);
-    const note = app.notes.create({ content: "# Start\n\n" }, now);
+    const device = await app.auth.createDeviceToken("Desktop", now);
+    const note = await app.notes.create({ content: "# Start\n\n" }, now);
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
@@ -683,23 +686,23 @@ describe("nanotes sync server", () => {
       doc.destroy();
     } finally {
       server.stop(true);
-      app.close();
+      await app.close();
     }
   });
 
   test("renaming a device updates its record and pushes device-renamed only to its websocket", async () => {
     const now = 1_700_000_000_000;
-    const app = createApp({
-      databasePath: ":memory:",
+    const app = await createApp({
+      databasePath: await testDatabase(engine),
       passwordHash: null,
       mcpToken: null,
       origin: "https://notes.example.com",
       secureCookies: false,
       clock: () => now,
     });
-    const cookie = app.auth.startSession(now);
-    const laptop = app.auth.createDeviceToken("nanotes (Windows · QUILL-WIN)", now);
-    const phone = app.auth.createDeviceToken("nanotes (Android)", now);
+    const cookie = await app.auth.startSession(now);
+    const laptop = await app.auth.createDeviceToken("nanotes (Windows · QUILL-WIN)", now);
+    const phone = await app.auth.createDeviceToken("nanotes (Android)", now);
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
@@ -806,23 +809,23 @@ describe("nanotes sync server", () => {
       phoneWs.ws.close();
     } finally {
       server.stop(true);
-      app.close();
+      await app.close();
     }
   });
 
   test("revoking a device disconnects its active websocket while keeping other devices connected", async () => {
     const now = 1_700_000_000_000;
-    const app = createApp({
-      databasePath: ":memory:",
+    const app = await createApp({
+      databasePath: await testDatabase(engine),
       passwordHash: null,
       mcpToken: null,
       secureCookies: false,
       origin: null,
       clock: () => now,
     });
-    const cookie = app.auth.startSession(now).split(";")[0]!;
-    const laptop = app.auth.createDeviceToken("Laptop", now);
-    const phone = app.auth.createDeviceToken("Phone", now);
+    const cookie = (await app.auth.startSession(now)).split(";")[0]!;
+    const laptop = await app.auth.createDeviceToken("Laptop", now);
+    const phone = await app.auth.createDeviceToken("Phone", now);
 
     const server = Bun.serve({
       port: 0,
@@ -881,14 +884,14 @@ describe("nanotes sync server", () => {
       phoneClient.ws.close();
     } finally {
       server.stop(true);
-      app.close();
+      await app.close();
     }
   });
 
   test("listing and searching notes respects pin/recency order, utf-8 byte sizes, ASCII/Unicode queries, and limits", async () => {
     let now = 1_700_000_000_000;
-    const app = createApp({
-      databasePath: ":memory:",
+    const app = await createApp({
+      databasePath: await testDatabase(engine),
       passwordHash: null,
       mcpToken: null,
       secureCookies: false,
@@ -897,33 +900,33 @@ describe("nanotes sync server", () => {
     });
 
     try {
-      const older = app.notes.create({ content: "# Alpha Plan\n\nRoadmap item" }, now);
+      const older = await app.notes.create({ content: "# Alpha Plan\n\nRoadmap item" }, now);
       now += 1000;
-      const pinned = app.notes.create({ content: "# Pinned Note\n\nCafé notes" }, now);
-      app.notes.update(pinned.id, { pinned: true }, now);
+      const pinned = await app.notes.create({ content: "# Pinned Note\n\nCafé notes" }, now);
+      await app.notes.update(pinned.id, { pinned: true }, now);
       now += 1000;
-      const unicode = app.notes.create({ content: "# 日本語メモ\n\nプロジェクトα" }, now);
+      const unicode = await app.notes.create({ content: "# 日本語メモ\n\nプロジェクトα" }, now);
       now += 1000;
-      const deleted = app.notes.create({ content: "# Alpha Deleted\n\nGone" }, now);
-      app.notes.remove(deleted.id, now + 1);
+      const deleted = await app.notes.create({ content: "# Alpha Deleted\n\nGone" }, now);
+      await app.notes.remove(deleted.id, now + 1);
 
-      const all = app.notes.listWithRev(undefined, 2);
-      expect(all.rev).toBe(app.notes.currentRev());
+      const all = await app.notes.listWithRev(undefined, 2);
+      expect(all.rev).toBe(await app.notes.currentRev());
       expect(all.notes.map((n) => n.id)).toEqual([pinned.id, unicode.id]);
       expect(all.notes[0]?.size).toBe(Buffer.byteLength("# Pinned Note\n\nCafé notes", "utf8"));
       expect(all.notes[1]?.size).toBe(Buffer.byteLength("# 日本語メモ\n\nプロジェクトα", "utf8"));
 
       // ASCII case-insensitive search matches title, path, or body and excludes deleted rows.
-      const asciiMatches = app.notes.list("ALPHA", 10);
+      const asciiMatches = await app.notes.list("ALPHA", 10);
       expect(asciiMatches.map((n) => n.id)).toEqual([older.id]);
 
       // Non-ASCII case-insensitive search matches accented and CJK content.
-      const accentMatches = app.notes.list("café", 10);
+      const accentMatches = await app.notes.list("café", 10);
       expect(accentMatches.map((n) => n.id)).toEqual([pinned.id]);
-      const cjkMatches = app.notes.list("プロジェクト", 10);
+      const cjkMatches = await app.notes.list("プロジェクト", 10);
       expect(cjkMatches.map((n) => n.id)).toEqual([unicode.id]);
     } finally {
-      app.close();
+      await app.close();
     }
   });
 
@@ -938,8 +941,8 @@ describe("nanotes sync server", () => {
     writeFileSync(join(distDir, "web-editor-abc12345.js"), "export default 1;");
     writeFileSync(join(distDir, "secret.txt"), "nope");
 
-    const app = createApp({
-      databasePath: ":memory:",
+    const app = await createApp({
+      databasePath: await testDatabase(engine),
       passwordHash: null,
       mcpToken: null,
       secureCookies: false,
@@ -964,7 +967,7 @@ describe("nanotes sync server", () => {
       const traversal = await app.fetch(new Request("http://localhost/assets/..%2Fpackage.json"));
       expect(traversal.status).toBe(404);
     } finally {
-      app.close();
+      await app.close();
       rmSync(distDir, { recursive: true, force: true });
     }
   });

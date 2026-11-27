@@ -116,10 +116,20 @@ export class CollabHub {
     }
   }
 
+  /** Runs socket work in turn with note reads and writes (see `NotesStore.exclusive`). */
+  private run(task: () => Promise<void>): void {
+    this.notes.exclusive(task).catch((cause: unknown) => console.error("collab:", cause));
+  }
+
+  private async currentRev(): Promise<number> {
+    await this.flushNote();
+    return this.notes.revision();
+  }
+
   onOpen(ws: ServerWebSocket<WsClientData>): void {
     this.clients.add(ws);
     if (ws.data.authed) {
-      sendJson(ws, { type: "authed", rev: this.notes.currentRev(), deviceName: ws.data.deviceName });
+      this.run(async () => sendJson(ws, { type: "authed", rev: await this.currentRev(), deviceName: ws.data.deviceName }));
       return;
     }
     ws.data.authTimer = setTimeout(() => {
@@ -135,13 +145,20 @@ export class CollabHub {
       clearTimeout(ws.data.authTimer);
       ws.data.authTimer = null;
     }
-    for (const noteId of [...ws.data.rooms]) {
-      this.leaveRoom(ws, noteId);
-    }
-    this.clients.delete(ws);
+    this.run(async () => {
+      for (const noteId of [...ws.data.rooms]) {
+        // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop
+        await this.leaveRoom(ws, noteId);
+      }
+      this.clients.delete(ws);
+    });
   }
 
   onMessage(ws: ServerWebSocket<WsClientData>, raw: string | Buffer): void {
+    this.run(() => this.handleMessage(ws, raw));
+  }
+
+  private async handleMessage(ws: ServerWebSocket<WsClientData>, raw: string | Buffer): Promise<void> {
     let msg: Record<string, unknown>;
     try {
       const text = typeof raw === "string" ? raw : raw.toString("utf8");
@@ -161,7 +178,7 @@ export class CollabHub {
 
     if (type === "auth") {
       if (ws.data.authed) {
-        sendJson(ws, { type: "authed", rev: this.notes.currentRev(), deviceName: ws.data.deviceName });
+        sendJson(ws, { type: "authed", rev: await this.currentRev(), deviceName: ws.data.deviceName });
         return;
       }
       const token = msg["token"];
@@ -170,7 +187,7 @@ export class CollabHub {
         ws.close(4401, "unauthorized");
         return;
       }
-      const device = this.auth.verifyDeviceToken(token, this.clock());
+      const device = await this.auth.verifyDeviceToken(token, this.clock());
       if (!device) {
         sendJson(ws, { type: "error", message: "invalid device token" });
         ws.close(4401, "unauthorized");
@@ -183,7 +200,7 @@ export class CollabHub {
         clearTimeout(ws.data.authTimer);
         ws.data.authTimer = null;
       }
-      sendJson(ws, { type: "authed", rev: this.notes.currentRev(), deviceName: device.name });
+      sendJson(ws, { type: "authed", rev: await this.currentRev(), deviceName: device.name });
       return;
     }
 
@@ -199,14 +216,14 @@ export class CollabHub {
         return;
       }
       const stateVector = typeof msg["stateVector"] === "string" ? msg["stateVector"] : undefined;
-      this.joinRoom(ws, noteId.trim(), stateVector);
+      await this.joinRoom(ws, noteId.trim(), stateVector);
       return;
     }
 
     if (type === "leave") {
       const noteId = msg["noteId"];
       if (typeof noteId === "string" && noteId.trim()) {
-        this.leaveRoom(ws, noteId.trim());
+        await this.leaveRoom(ws, noteId.trim());
       }
       return;
     }
@@ -228,8 +245,8 @@ export class CollabHub {
     }
   }
 
-  private getOrLoadRoom(noteId: string): { room: Room; note: SyncedNote } | null {
-    const note = this.notes.getRaw(noteId);
+  private async getOrLoadRoom(noteId: string): Promise<{ room: Room; note: SyncedNote } | null> {
+    const note = await this.notes.getRaw(noteId);
     if (!note || note.deletedAt !== null) return null;
 
     const existing = this.rooms.get(noteId);
@@ -238,20 +255,20 @@ export class CollabHub {
     }
 
     const doc = new Y.Doc();
-    const persisted = this.notes.getYjsState(noteId);
+    const persisted = await this.notes.getYjsState(noteId);
     if (persisted && persisted.byteLength > 0) {
       Y.applyUpdate(doc, persisted);
       // Reconcile if content was ever updated without yjs_state (e.g. legacy DB migration).
       const ytext = doc.getText("content");
       if (ytext.toString() !== note.content) {
         applyTextDiff(ytext, note.content, SERVER_DIFF_ORIGIN);
-        this.notes.saveYjsState(noteId, Y.encodeStateAsUpdate(doc));
+        await this.notes.saveYjsState(noteId, Y.encodeStateAsUpdate(doc));
       }
     } else {
       if (note.content.length > 0) {
         doc.getText("content").insert(0, note.content);
       }
-      this.notes.saveYjsState(noteId, Y.encodeStateAsUpdate(doc));
+      await this.notes.saveYjsState(noteId, Y.encodeStateAsUpdate(doc));
     }
 
     const awareness = new Awareness(doc);
@@ -302,8 +319,8 @@ export class CollabHub {
     return { room, note };
   }
 
-  private joinRoom(ws: ServerWebSocket<WsClientData>, noteId: string, stateVectorB64?: string): void {
-    const loaded = this.getOrLoadRoom(noteId);
+  private async joinRoom(ws: ServerWebSocket<WsClientData>, noteId: string, stateVectorB64?: string): Promise<void> {
+    const loaded = await this.getOrLoadRoom(noteId);
     if (!loaded) {
       sendJson(ws, { type: "error", noteId, message: "note not found" });
       return;
@@ -344,7 +361,7 @@ export class CollabHub {
     }
   }
 
-  private leaveRoom(ws: ServerWebSocket<WsClientData>, noteId: string): void {
+  private async leaveRoom(ws: ServerWebSocket<WsClientData>, noteId: string): Promise<void> {
     ws.data.rooms.delete(noteId);
     const room = this.rooms.get(noteId);
     if (!room) return;
@@ -357,7 +374,7 @@ export class CollabHub {
     }
 
     if (room.clients.size === 0) {
-      this.flushRoom(room);
+      await this.flushRoom(room);
       this.destroyRoom(room);
     }
   }
@@ -413,32 +430,33 @@ export class CollabHub {
     if (room.flushTimer) clearTimeout(room.flushTimer);
     room.flushTimer = setTimeout(() => {
       room.flushTimer = null;
-      this.flushRoom(room);
+      this.run(() => this.flushRoom(room));
     }, this.flushDebounceMs);
     if (!room.maxFlushTimer) {
       const maxWait = Math.max(this.flushDebounceMs, FLUSH_MAX_WAIT_MS);
       room.maxFlushTimer = setTimeout(() => {
         room.maxFlushTimer = null;
-        this.flushRoom(room);
+        this.run(() => this.flushRoom(room));
       }, maxWait);
     }
   }
 
-  flushNote(noteId?: string): void {
+  async flushNote(noteId?: string): Promise<void> {
     if (this.dirtyRooms.size === 0) return;
     if (noteId) {
       const room = this.rooms.get(noteId);
       if (room) {
-        this.flushRoom(room);
+        await this.flushRoom(room);
         return;
       }
     }
     for (const room of [...this.dirtyRooms]) {
-      this.flushRoom(room);
+      // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop
+      await this.flushRoom(room);
     }
   }
 
-  private flushRoom(room: Room): void {
+  private async flushRoom(room: Room): Promise<void> {
     if (room.flushTimer) {
       clearTimeout(room.flushTimer);
       room.flushTimer = null;
@@ -453,7 +471,7 @@ export class CollabHub {
 
     const content = room.doc.getText("content").toString();
     const state = Y.encodeStateAsUpdate(room.doc);
-    const saved = this.notes.saveFromCollab(room.noteId, state, content, this.clock());
+    const saved = await this.notes.saveFromCollab(room.noteId, state, content, this.clock());
     if (saved) {
       this.broadcastNoteChanged(saved);
     }
@@ -468,6 +486,7 @@ export class CollabHub {
       clearTimeout(room.maxFlushTimer);
       room.maxFlushTimer = null;
     }
+    room.dirty = false;
     this.dirtyRooms.delete(room);
     room.awareness.destroy();
     room.doc.destroy();
@@ -478,7 +497,7 @@ export class CollabHub {
    * Called when MCP or REST writes plain Markdown content directly to a note.
    * Diffs the change onto the note's Y.Doc, saves yjs_state, and streams live updates to connected peers.
    */
-  applyExternalContent(note: SyncedNote): void {
+  async applyExternalContent(note: SyncedNote): Promise<void> {
     if (note.deletedAt !== null) {
       const room = this.rooms.get(note.id);
       if (room) {
@@ -505,7 +524,7 @@ export class CollabHub {
       } finally {
         activeRoom.doc.off("update", listener);
       }
-      this.notes.saveYjsState(note.id, Y.encodeStateAsUpdate(activeRoom.doc));
+      await this.notes.saveYjsState(note.id, Y.encodeStateAsUpdate(activeRoom.doc));
       activeRoom.dirty = false;
       this.dirtyRooms.delete(activeRoom);
       if (activeRoom.flushTimer) {
@@ -531,12 +550,12 @@ export class CollabHub {
     } else {
       const doc = new Y.Doc();
       try {
-        const persisted = this.notes.getYjsState(note.id);
+        const persisted = await this.notes.getYjsState(note.id);
         if (persisted && persisted.byteLength > 0) {
           Y.applyUpdate(doc, persisted);
         }
         applyTextDiff(doc.getText("content"), note.content, SERVER_DIFF_ORIGIN);
-        this.notes.saveYjsState(note.id, Y.encodeStateAsUpdate(doc));
+        await this.notes.saveYjsState(note.id, Y.encodeStateAsUpdate(doc));
       } finally {
         doc.destroy();
       }
@@ -554,8 +573,9 @@ export class CollabHub {
     }
   }
 
-  close(): void {
-    this.flushNote();
+  /** Inside exclusive. */
+  async close(): Promise<void> {
+    await this.flushNote();
     for (const room of [...this.rooms.values()]) {
       this.destroyRoom(room);
     }

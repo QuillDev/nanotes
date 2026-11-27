@@ -26,7 +26,7 @@ function buildServer(notes: NotesStore, passkeys: Passkeys | null, clock: () => 
         limit: z.number().int().min(1).max(500).optional(),
       },
     },
-    ({ limit }) => json(notes.listWithRev(undefined, limit ?? 200)),
+    async ({ limit }) => json(await notes.listWithRev(undefined, limit ?? 200)),
   );
 
   server.registerTool(
@@ -38,7 +38,7 @@ function buildServer(notes: NotesStore, passkeys: Passkeys | null, clock: () => 
         limit: z.number().int().min(1).max(200).optional(),
       },
     },
-    ({ query, limit }) => json({ notes: notes.list(query, limit ?? 50) }),
+    async ({ query, limit }) => json({ notes: await notes.list(query, limit ?? 50) }),
   );
 
   server.registerTool(
@@ -49,8 +49,8 @@ function buildServer(notes: NotesStore, passkeys: Passkeys | null, clock: () => 
         idOrPath: z.string().min(1),
       },
     },
-    ({ idOrPath }) => {
-      const note = notes.get(idOrPath);
+    async ({ idOrPath }) => {
+      const note = await notes.get(idOrPath);
       return json(note ?? { error: "note not found" });
     },
   );
@@ -65,7 +65,7 @@ function buildServer(notes: NotesStore, passkeys: Passkeys | null, clock: () => 
         pinned: z.boolean().optional(),
       },
     },
-    (args) => json(notes.create(args, clock())),
+    async (args) => json(await notes.create(args, clock())),
   );
 
   server.registerTool(
@@ -79,7 +79,7 @@ function buildServer(notes: NotesStore, passkeys: Passkeys | null, clock: () => 
         pinned: z.boolean().optional(),
       },
     },
-    ({ idOrPath, ...changes }) => json(notes.update(idOrPath, changes, clock()) ?? { error: "note not found" }),
+    async ({ idOrPath, ...changes }) => json((await notes.update(idOrPath, changes, clock())) ?? { error: "note not found" }),
   );
 
   server.registerTool(
@@ -91,7 +91,7 @@ function buildServer(notes: NotesStore, passkeys: Passkeys | null, clock: () => 
         text: z.string().min(1),
       },
     },
-    ({ idOrPath, text }) => json(notes.append(idOrPath, text, clock()) ?? { error: "note not found" }),
+    async ({ idOrPath, text }) => json((await notes.append(idOrPath, text, clock())) ?? { error: "note not found" }),
   );
 
   server.registerTool(
@@ -102,8 +102,8 @@ function buildServer(notes: NotesStore, passkeys: Passkeys | null, clock: () => 
         idOrPath: z.string().min(1),
       },
     },
-    ({ idOrPath }) => {
-      const deleted = notes.remove(idOrPath, clock());
+    async ({ idOrPath }) => {
+      const deleted = await notes.remove(idOrPath, clock());
       return json(deleted ? { deleted: true, id: deleted.id, path: deleted.path, rev: deleted.rev } : { error: "note not found" });
     },
   );
@@ -115,8 +115,8 @@ function buildServer(notes: NotesStore, passkeys: Passkeys | null, clock: () => 
         description:
           "Mint a one-time link (valid 24 hours) that lets the user register a passkey for signing in to the nanotes sync server. Share only with the owner.",
       },
-      () => {
-        const { url, expiresAt } = passkeys.createSetupLink(clock());
+      async () => {
+        const { url, expiresAt } = await passkeys.createSetupLink(clock());
         return json({ url, expiresAt });
       },
     );
