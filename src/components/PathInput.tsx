@@ -1,5 +1,6 @@
 import React from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { Input } from 'nakomponents';
 import { IS_TAURI, type PathSuggestion } from '../desktop/config';
 import { PathGlyph } from './Icons';
 
@@ -59,7 +60,8 @@ export function PathInput({
 
   return (
     <div className="pathInput">
-      <input
+      <Input
+        className="h-8"
         value={value}
         onChange={event => {
           const next = event.target.value;

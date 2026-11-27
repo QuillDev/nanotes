@@ -4,6 +4,8 @@ import CodeMirror from '@uiw/react-codemirror';
 import type { EditorView } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
+import { Download, Menu, Plus, X } from 'lucide-react';
+import { Button } from 'nakomponents';
 import { SearchIsland } from './components/SearchIsland';
 import { SettingsOverlay } from './components/SettingsOverlay';
 import {
@@ -597,49 +599,46 @@ function App() {
         />
         <div className="topbarActions">
           {updater.updateState === 'available' && updater.availableVersion ? (
-            <button
+            <Button
               className="topbarButton topbarButton-update"
+              size="icon-xs"
+              variant="ghost"
               type="button"
               aria-label={`Update available (${updater.availableVersion})`}
               title={`Update to v${updater.availableVersion}`}
               onClick={() => setSettingsOpen(true)}
             >
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 3v12" />
-                <path d="m7 10 5 5 5-5" />
-                <path d="M5 20h14" />
-              </svg>
-            </button>
+              <Download />
+            </Button>
           ) : null}
-          <button
+          <Button
             className="topbarButton"
+            size="icon-xs"
+            variant="ghost"
             type="button"
             aria-label="New note"
             title={`New note (${appShortcutLabel('N')})`}
             onClick={createNewNote}
           >
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 5v14" />
-              <path d="M5 12h14" />
-            </svg>
-          </button>
+            <Plus />
+          </Button>
           {IS_ANDROID ? (
-            <button
+            <Button
               className="topbarButton"
+              size="icon-xs"
+              variant="ghost"
               type="button"
               aria-label="Settings"
               onClick={() => setSettingsOpen(value => !value)}
             >
-              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 6h16" />
-                <path d="M4 12h16" />
-                <path d="M4 18h16" />
-              </svg>
-            </button>
+              <Menu />
+            </Button>
           ) : null}
           {IS_WINDOWS ? (
-            <button
+            <Button
               className="topbarButton"
+              size="icon-xs"
+              variant="ghost"
               type="button"
               aria-label="Hide overlay"
               title={`Hide overlay (${appShortcutLabel('Q')})`}
@@ -647,11 +646,8 @@ function App() {
                 void hideOverlay();
               }}
             >
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 6 6 18" />
-                <path d="m6 6 12 12" />
-              </svg>
-            </button>
+              <X />
+            </Button>
           ) : null}
         </div>
       </header>

@@ -6,6 +6,9 @@ import {
   type CollabConnectionStatus,
   type LiveNoteEvent,
 } from "./collab";
+import { Button, Input } from "nakomponents";
+import { Pin, X } from "lucide-react";
+import { TokenLabelDialog } from "./components/TokenLabelDialog";
 import "./web-app.css";
 
 const loadLiveNoteEditor = () => import("./web-editor");
@@ -27,13 +30,12 @@ class EditorErrorBoundary extends React.Component<
         <div className="editorEmpty">
           <div className="stack" style={{ justifyItems: "center" }}>
             <div>The editor could not load. A new version may have been deployed.</div>
-            <button
-              className="btn btn-primary"
+            <Button size="sm"
               type="button"
               onClick={() => window.location.reload()}
             >
               Reload
-            </button>
+            </Button>
           </div>
         </div>
       );
@@ -143,6 +145,7 @@ function WebApp() {
   const [editingDeviceId, setEditingDeviceId] = React.useState<string | null>(null);
   const [editingDeviceName, setEditingDeviceName] = React.useState("");
   const [newToken, setNewToken] = React.useState<string | null>(null);
+  const [tokenDialogOpen, setTokenDialogOpen] = React.useState(false);
   const [notes, setNotes] = React.useState<NoteSummary[]>([]);
   const [query, setQuery] = React.useState("");
   const [activeNoteId, setActiveNoteId] = React.useState<string | null>(null);
@@ -391,6 +394,22 @@ function WebApp() {
     }
   }, [loadSession]);
 
+  const createToken = React.useCallback(
+    async (name: string) => {
+      const res = await api<{ token?: string; error?: string }>("/api/devices", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) {
+        setError(res.data.error || "Could not create token");
+        return;
+      }
+      setNewToken(res.data.token ?? null);
+      await loadSession();
+    },
+    [loadSession],
+  );
+
   const createNote = React.useCallback(async () => {
     setError("");
     const res = await api<NoteSummary & { error?: string }>("/api/notes", {
@@ -456,9 +475,9 @@ function WebApp() {
           <div className="stack">
             <p className="muted">Register a passkey for this nanotes sync server.</p>
             <div className="actions">
-              <button className="btn btn-primary" type="button" onClick={() => void registerPasskey(route.token)}>
+              <Button size="sm" type="button" onClick={() => void registerPasskey(route.token)}>
                 Add passkey
-              </button>
+              </Button>
             </div>
             {error ? <div className="error">{error}</div> : null}
           </div>
@@ -499,9 +518,9 @@ function WebApp() {
             </p>
             {methods.passkey ? (
               <div className="actions">
-                <button className="btn btn-primary" type="button" onClick={() => void signInPasskey()}>
+                <Button size="sm" type="button" onClick={() => void signInPasskey()}>
                   Sign in with passkey
-                </button>
+                </Button>
               </div>
             ) : null}
             {methods.password ? (
@@ -522,17 +541,16 @@ function WebApp() {
                   await loadSession();
                 }}
               >
-                <input
+                <Input
                   type="password"
                   placeholder="Password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  style={{ height: 38, padding: "0 12px" }}
                 />
                 <div className="actions">
-                  <button className={methods.passkey ? "btn" : "btn btn-primary"} type="submit">
+                  <Button size="sm" variant={methods.passkey ? "outline" : "default"} type="submit">
                     Sign in with password
-                  </button>
+                  </Button>
                 </div>
               </form>
             ) : null}
@@ -561,8 +579,7 @@ function WebApp() {
             <p className="muted">Approve desktop sync for this pairing code:</p>
             <div className="codeBox">{route.code}</div>
             <div className="actions">
-              <button
-                className="btn btn-primary"
+              <Button size="sm"
                 type="button"
                 onClick={async () => {
                   setError("");
@@ -581,16 +598,15 @@ function WebApp() {
                 }}
               >
                 Approve device
-              </button>
-              <button
-                className="btn btn-ghost"
+              </Button>
+              <Button size="sm" variant="ghost"
                 type="button"
                 onClick={() => {
                   window.location.hash = "#/";
                 }}
               >
                 Cancel
-              </button>
+              </Button>
             </div>
             {error ? <div className="error">{error}</div> : null}
           </div>
@@ -603,13 +619,15 @@ function WebApp() {
     <div className="workspace">
       <header className="topbar">
         <div className="topbarLeft">
-          <button
-            className="btn btn-ghost menuToggle"
+          <Button
+            size="sm"
+            variant="ghost"
+            className="menuToggle"
             type="button"
             onClick={() => setSidebarOpen((open) => !open)}
           >
             Notes
-          </button>
+          </Button>
           <h1 className="brand">
             <span><span className="na">na</span>notes</span>
             <span
@@ -619,11 +637,10 @@ function WebApp() {
           </h1>
         </div>
         <div className="topbarRight">
-          <button className="btn btn-primary" type="button" onClick={() => void createNote()}>
+          <Button size="sm" type="button" onClick={() => void createNote()}>
             New
-          </button>
-          <button
-            className="btn btn-ghost"
+          </Button>
+          <Button size="sm" variant="ghost"
             type="button"
             onClick={() => {
               setShowDevices((v) => !v);
@@ -631,9 +648,8 @@ function WebApp() {
             }}
           >
             {showDevices ? "Editor" : "Devices"}
-          </button>
-          <button
-            className="btn btn-ghost"
+          </Button>
+          <Button size="sm" variant="ghost"
             type="button"
             onClick={async () => {
               await api("/api/logout", { method: "POST", body: "{}" });
@@ -645,7 +661,7 @@ function WebApp() {
             }}
           >
             Sign out
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -656,7 +672,7 @@ function WebApp() {
             {error ? <div className="error">{error}</div> : null}
             <label className="deviceField">
               <span className="muted">This browser</span>
-              <input
+              <Input
                 type="text"
                 maxLength={80}
                 placeholder={DEFAULT_CLIENT_NAME}
@@ -665,29 +681,14 @@ function WebApp() {
               />
             </label>
             <div className="actions">
-              <button
-                className="btn"
+              <Button size="sm" variant="outline"
                 type="button"
-                onClick={async () => {
-                  const name = window.prompt("Device label", "Manual token");
-                  if (name === null) return;
-                  const res = await api<{ token?: string; error?: string }>("/api/devices", {
-                    method: "POST",
-                    body: JSON.stringify({ name }),
-                  });
-                  if (!res.ok) {
-                    setError(res.data.error || "Could not create token");
-                    return;
-                  }
-                  setNewToken(res.data.token ?? null);
-                  await loadSession();
-                }}
+                onClick={() => setTokenDialogOpen(true)}
               >
                 New sync token
-              </button>
+              </Button>
               {methods.passkeyConfigured ? (
-                <button
-                  className="btn btn-ghost"
+                <Button size="sm" variant="ghost"
                   type="button"
                   onClick={async () => {
                     const res = await api<{ url?: string; error?: string }>("/api/passkeys/setup-link", {
@@ -702,9 +703,14 @@ function WebApp() {
                   }}
                 >
                   Add passkey
-                </button>
+                </Button>
               ) : null}
             </div>
+            <TokenLabelDialog
+              open={tokenDialogOpen}
+              onOpenChange={setTokenDialogOpen}
+              onCreate={(name) => void createToken(name)}
+            />
             {newToken ? (
               <div className="stack">
                 <p className="muted">Copy this token now (shown once):</p>
@@ -743,7 +749,7 @@ function WebApp() {
                           setEditingDeviceId(null);
                         }}
                       >
-                        <input
+                        <Input
                           type="text"
                           maxLength={80}
                           autoFocus
@@ -754,16 +760,15 @@ function WebApp() {
                           }}
                         />
                         <div className="actions">
-                          <button className="btn btn-primary" type="submit" disabled={!editingDeviceName.trim()}>
+                          <Button size="sm" type="submit" disabled={!editingDeviceName.trim()}>
                             Save
-                          </button>
-                          <button
-                            className="btn btn-ghost"
+                          </Button>
+                          <Button size="sm" variant="ghost"
                             type="button"
                             onClick={() => setEditingDeviceId(null)}
                           >
                             Cancel
-                          </button>
+                          </Button>
                         </div>
                       </form>
                     ) : (
@@ -777,8 +782,7 @@ function WebApp() {
                           </div>
                         </div>
                         <div className="actions">
-                          <button
-                            className="btn btn-ghost"
+                          <Button size="sm" variant="ghost"
                             type="button"
                             onClick={() => {
                               setEditingDeviceId(device.id);
@@ -786,9 +790,8 @@ function WebApp() {
                             }}
                           >
                             Rename
-                          </button>
-                          <button
-                            className="btn btn-ghost"
+                          </Button>
+                          <Button size="sm" variant="ghost"
                             type="button"
                             onClick={async () => {
                               await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
@@ -796,7 +799,7 @@ function WebApp() {
                             }}
                           >
                             Revoke
-                          </button>
+                          </Button>
                         </div>
                       </>
                     )}
@@ -810,7 +813,7 @@ function WebApp() {
         <div className="workspaceBody">
           <aside className={sidebarOpen ? "sidebar sidebar-open" : "sidebar"}>
             <div className="sidebarSearch">
-              <input
+              <Input
                 type="search"
                 placeholder="Search notes…"
                 value={query}
@@ -839,22 +842,28 @@ function WebApp() {
                       <span className="noteRowTitle">{note.title}</span>
                       <span className="noteRowPath">{note.path}</span>
                     </button>
-                    <button
+                    <Button
                       className={note.pinned ? "iconBtn iconBtn-pinned" : "iconBtn"}
+                      size="icon-xs"
+                      variant="ghost"
                       type="button"
                       title={note.pinned ? "Unpin" : "Pin"}
+                      aria-label={note.pinned ? "Unpin" : "Pin"}
                       onClick={() => void togglePin(note)}
                     >
-                      ★
-                    </button>
-                    <button
+                      <Pin fill={note.pinned ? "currentColor" : "none"} />
+                    </Button>
+                    <Button
                       className="iconBtn"
+                      size="icon-xs"
+                      variant="ghost"
                       type="button"
                       title="Delete note"
+                      aria-label="Delete note"
                       onClick={() => void removeNote(note)}
                     >
-                      ×
-                    </button>
+                      <X />
+                    </Button>
                   </div>
                 ))
               )}
@@ -893,9 +902,9 @@ function WebApp() {
               <div className="editorEmpty">
                 <div className="stack" style={{ justifyItems: "center" }}>
                   <div>Select a note or create a new one.</div>
-                  <button className="btn btn-primary" type="button" onClick={() => void createNote()}>
+                  <Button size="sm" type="button" onClick={() => void createNote()}>
                     New note
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}

@@ -122,7 +122,7 @@ export const DEFAULT_CLIENT_NAME = IS_MAC ? 'macOS' : IS_WINDOWS ? 'Windows' : I
 // Matches the Rust DEFAULT_HOTKEY: Option/Alt + N. Stored in the plugin's
 // accelerator format ("alt+KeyN") so it round-trips straight to `set_hotkey`.
 export const DEFAULT_HOTKEY = 'alt+KeyN';
-export const DEFAULT_GLASS_TINT = '#09090c';
+export const DEFAULT_GLASS_TINT = '#09090b';
 export const DEFAULT_GLASS_OPACITY = 0.32;
 export const DEFAULT_GLASS_BLUR = 0;
 export const IS_TAURI = '__TAURI_INTERNALS__' in window;

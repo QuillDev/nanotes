@@ -1,5 +1,15 @@
 import React from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { X } from 'lucide-react';
+import {
+  Button,
+  Collapsible,
+  CollapsibleChevron,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  Input,
+  Switch,
+} from 'nakomponents';
 import type { CollabConnectionStatus } from '../collab';
 import {
   DEFAULT_CLIENT_NAME,
@@ -64,17 +74,16 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
     <div className="settingsOverlay" role="dialog" aria-modal="true" aria-label="Settings">
       <header className="settingsHeader">
         <h2 className="settingsTitle">Settings</h2>
-        <button
+        <Button
           className="settingsClose"
+          size="icon-xs"
+          variant="ghost"
           type="button"
           aria-label="Close settings"
           onClick={props.onClose}
         >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M18 6 6 18" />
-            <path d="m6 6 12 12" />
-          </svg>
-        </button>
+          <X />
+        </Button>
       </header>
       <div className="settingsBody">
         {IS_ANDROID ? null : (
@@ -90,27 +99,30 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
 
             <div className="settingRow">
               <strong>New note hotkey</strong>
-              <button
-                className={props.recordingHotkey ? 'hotkeyButton hotkeyButton-recording' : 'hotkeyButton'}
+              <Button
+                className="hotkeyButton"
+                size="xs"
+                variant={props.recordingHotkey ? 'default' : 'outline'}
                 type="button"
                 aria-label="Change new note hotkey"
                 onClick={props.onToggleRecordHotkey}
                 onBlur={props.onStopRecordHotkey}
               >
                 {props.recordingHotkey ? 'Press keys…' : formatHotkey(props.hotkey)}
-              </button>
+              </Button>
             </div>
 
-            <details
+            <Collapsible
               className="settingsFold"
               open={props.appearanceOpen}
-              onToggle={event => props.onAppearanceOpenChange(event.currentTarget.open)}
+              onOpenChange={props.onAppearanceOpenChange}
             >
-              <summary className="settingsFoldSummary">
+              <CollapsibleTrigger className="settingsFoldSummary">
                 <span>Appearance</span>
-              </summary>
+                <CollapsibleChevron className="settingsFoldChevron" />
+              </CollapsibleTrigger>
 
-              <div className="settingsFoldBody">
+              <CollapsibleContent className="settingsFoldBody">
                 <div className="settingRow settingRow-stacked">
                   <div className="settingRowHeader">
                     <strong>Glass tint</strong>
@@ -157,18 +169,18 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
                     onChange={event => props.onGlassBlurChange(Number(event.target.value))}
                   />
                 </div>
-              </div>
-            </details>
+              </CollapsibleContent>
+            </Collapsible>
           </>
         )}
 
         {IS_TAURI ? (
-          <details
+          <Collapsible
             className="settingsFold"
             open={props.syncOpen}
-            onToggle={event => props.onSyncOpenChange(event.currentTarget.open)}
+            onOpenChange={props.onSyncOpenChange}
           >
-            <summary className="settingsFoldSummary">
+            <CollapsibleTrigger className="settingsFoldSummary">
               <span>
                 Sync
                 {props.syncToken ? (
@@ -177,12 +189,14 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
                   </span>
                 ) : null}
               </span>
-            </summary>
+              <CollapsibleChevron className="settingsFoldChevron" />
+            </CollapsibleTrigger>
 
-            <div className="settingsFoldBody">
+            <CollapsibleContent className="settingsFoldBody">
               <label className="syncField">
                 <span>Server URL</span>
-                <input
+                <Input
+                  className="h-8"
                   type="url"
                   placeholder="https://notes.example.com"
                   value={props.syncUrl}
@@ -192,7 +206,8 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
 
               <label className="syncField">
                 <span>Device name</span>
-                <input
+                <Input
+                  className="h-8"
                   type="text"
                   maxLength={80}
                   placeholder={DEFAULT_CLIENT_NAME}
@@ -221,8 +236,8 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
                   {props.pairingCode ? (
                     <>
                       {props.pairingUrl ? (
-                        <button
-                          className="hotkeyButton hotkeyButton-recording"
+                        <Button
+                          size="xs"
                           type="button"
                           onClick={() => {
                             void openUrl(props.pairingUrl!).catch((error: unknown) => {
@@ -233,58 +248,54 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
                           }}
                         >
                           Open
-                        </button>
+                        </Button>
                       ) : null}
-                      <button className="hotkeyButton" type="button" onClick={props.onStopPairing}>
+                      <Button size="xs" variant="outline" type="button" onClick={props.onStopPairing}>
                         Cancel
-                      </button>
+                      </Button>
                     </>
                   ) : props.syncToken ? (
                     <>
-                      <button
-                        className="hotkeyButton"
+                      <Button
+                        size="xs"
+                        variant="outline"
                         type="button"
                         disabled={props.syncStatus === 'syncing'}
                         title={props.syncError ?? undefined}
                         onClick={props.onRunSync}
                       >
                         {props.syncStatus === 'syncing' ? 'Syncing…' : 'Sync'}
-                      </button>
-                      <button className="hotkeyButton" type="button" onClick={props.onSignOutSync}>
+                      </Button>
+                      <Button size="xs" variant="outline" type="button" onClick={props.onSignOutSync}>
                         Sign out
-                      </button>
+                      </Button>
                     </>
                   ) : (
-                    <button
-                      className="hotkeyButton hotkeyButton-recording"
+                    <Button
+                      size="xs"
                       type="button"
                       disabled={props.pairingStarting}
                       onClick={props.onStartSyncSignIn}
                     >
                       {props.pairingStarting ? 'Connecting…' : 'Sign in'}
-                    </button>
+                    </Button>
                   )}
                 </div>
               </div>
               {props.syncError ? <div className="syncError">{props.syncError}</div> : null}
-            </div>
-          </details>
+            </CollapsibleContent>
+          </Collapsible>
         ) : null}
 
         {IS_ANDROID ? null : (
           <div className="settingRow">
             <strong>Launch at login</strong>
-            <button
-              className={props.launchAtLogin ? 'switch switch-on' : 'switch'}
-              role="switch"
-              aria-checked={props.launchAtLogin}
-              aria-label="Launch at login"
+            <Switch
+              checked={props.launchAtLogin}
+              label="Launch at login"
               disabled={!props.launchAtLoginReady}
-              type="button"
-              onClick={props.onToggleLaunchAtLogin}
-            >
-              <span className="switchKnob" />
-            </button>
+              onCheckedChange={props.onToggleLaunchAtLogin}
+            />
           </div>
         )}
 
@@ -294,12 +305,9 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
               Updates
               {props.appVersion ? <span className="settingMeta"> v{props.appVersion}</span> : null}
             </strong>
-            <button
-              className={
-                props.updateState === 'available'
-                  ? 'hotkeyButton hotkeyButton-recording'
-                  : 'hotkeyButton'
-              }
+            <Button
+              size="xs"
+              variant={props.updateState === 'available' ? 'default' : 'outline'}
               type="button"
               disabled={props.updateState === 'checking' || props.updateState === 'downloading'}
               title={props.updateState === 'error' ? (props.updateError ?? 'Update check failed') : undefined}
@@ -326,7 +334,7 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
                         : props.updateState === 'error'
                           ? 'Retry'
                           : 'Check'}
-            </button>
+            </Button>
           </div>
         ) : null}
         {IS_TAURI && props.updateError ? <div className="syncError">{props.updateError}</div> : null}

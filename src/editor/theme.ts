@@ -38,8 +38,8 @@ export const markdownHighlight = HighlightStyle.define([
   { tag: tags.processingInstruction, color: '#8b90a0' },
   { tag: tags.strong, color: '#ffffff', fontWeight: '750' },
   { tag: tags.emphasis, color: '#e8e9ee', fontStyle: 'italic' },
-  { tag: tags.link, color: '#ff7aa5', textDecoration: 'underline', textUnderlineOffset: '2px' },
-  { tag: tags.url, color: '#ff7aa5' },
+  { tag: tags.link, color: '#ec4899', textDecoration: 'underline', textUnderlineOffset: '2px' },
+  { tag: tags.url, color: '#ec4899' },
   { tag: tags.monospace, color: '#f4a7bd' },
   { tag: tags.quote, color: '#8b90a0', fontStyle: 'italic' },
   { tag: tags.list, color: '#e8e9ee' },
@@ -51,7 +51,7 @@ export const markdownHighlight = HighlightStyle.define([
 export const editorTheme = EditorView.theme({
   '&': {
     height: '100%',
-    backgroundColor: '#0a0a0d',
+    backgroundColor: '#09090b',
     color: '#e8e9ee',
     fontSize: '15px',
   },
@@ -62,7 +62,7 @@ export const editorTheme = EditorView.theme({
     overflow: 'auto',
   },
   '.cm-content': {
-    caretColor: '#ff7aa5',
+    caretColor: '#ec4899',
     padding: '0',
     minHeight: '100%',
   },
@@ -71,11 +71,11 @@ export const editorTheme = EditorView.theme({
     padding: '0 0 0.18rem 0',
   },
   '.cm-cursor': {
-    borderLeftColor: '#ff7aa5',
+    borderLeftColor: '#ec4899',
     borderLeftWidth: '2px',
   },
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
-    backgroundColor: 'rgba(246, 92, 142, 0.28)',
+    backgroundColor: 'rgba(219, 39, 119, 0.28)',
   },
   '&.cm-focused': {
     outline: 'none',

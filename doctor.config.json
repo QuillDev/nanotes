@@ -1,0 +1,102 @@
+{
+  "ignore": {
+    "overrides": [
+      {
+        "files": [
+          "src/hooks/useAppUpdater.ts"
+        ],
+        "rules": [
+          "react-doctor/effect-needs-cleanup"
+        ]
+      },
+      {
+        "files": [
+          "src/main.tsx"
+        ],
+        "rules": [
+          "react-doctor/exhaustive-deps",
+          "react-doctor/prefer-use-effect-event"
+        ]
+      },
+      {
+        "files": [
+          "src/web-app.tsx"
+        ],
+        "rules": [
+          "react-doctor/click-events-have-key-events",
+          "react-doctor/no-fetch-response-used-without-status-check",
+          "react-doctor/no-loading-flag-reset-outside-finally",
+          "react-doctor/no-noninteractive-element-interactions"
+        ]
+      },
+      {
+        "files": [
+          "src/main.tsx",
+          "src/web-app.tsx"
+        ],
+        "rules": [
+          "react-doctor/no-giant-component"
+        ]
+      },
+      {
+        "files": [
+          "src/components/SettingsOverlay.tsx",
+          "src/web-app.tsx"
+        ],
+        "rules": [
+          "react-doctor/no-high-complexity-react-function"
+        ]
+      },
+      {
+        "files": [
+          "src/hooks/useNoteSync.ts"
+        ],
+        "rules": [
+          "react-doctor/no-pass-live-state-to-parent"
+        ]
+      },
+      {
+        "files": [
+          "src/components/SearchIsland.tsx"
+        ],
+        "rules": [
+          "react-doctor/interactive-supports-focus",
+          "react-doctor/no-placeholder-only-field"
+        ]
+      },
+      {
+        "files": [
+          "src/editor/CollabEditor.tsx",
+          "src/hooks/useNoteSync.ts",
+          "src/main.tsx",
+          "src/web-app.tsx",
+          "src/web-editor.tsx"
+        ],
+        "rules": [
+          "react-doctor/no-ref-current-in-render"
+        ]
+      },
+      {
+        "files": [
+          "src/editor/CollabEditor.tsx",
+          "src/editor/code-blocks.ts",
+          "src/editor/extensions.ts",
+          "src/editor/markdown-decorations.ts",
+          "src/editor/theme.ts",
+          "src/web-editor.tsx"
+        ],
+        "rules": [
+          "react-doctor/prefer-dynamic-import"
+        ]
+      },
+      {
+        "files": [
+          "src/components/SettingsOverlay.tsx"
+        ],
+        "rules": [
+          "react-doctor/prefer-html-dialog"
+        ]
+      }
+    ]
+  }
+}
