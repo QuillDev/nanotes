@@ -9,6 +9,7 @@ import {
 import { Button, Input } from "nakomponents";
 import { Pin, X } from "lucide-react";
 import { TokenLabelDialog } from "./components/TokenLabelDialog";
+import { useAndroidUpdater } from "./hooks/useAndroidUpdater";
 import { apiClient, failure, segment } from "./lib/api";
 import type { DeviceInfo } from "../server/auth.ts";
 import type { NoteSummary } from "../server/notes.ts";
@@ -127,6 +128,7 @@ function WebApp() {
   const [showDevices, setShowDevices] = React.useState(false);
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const collabRef = React.useRef<CollabClient | null>(null);
+  const appUpdate = useAndroidUpdater();
 
   React.useEffect(() => {
     const onHash = () => setRoute(parseRoute());
@@ -565,6 +567,11 @@ function WebApp() {
           </h1>
         </div>
         <div className="topbarRight">
+          {appUpdate.updateState === "available" ? (
+            <Button size="sm" variant="outline" type="button" onClick={appUpdate.installUpdate}>
+              Update
+            </Button>
+          ) : null}
           <Button size="sm" type="button" onClick={() => void createNote()}>
             New
           </Button>
@@ -631,6 +638,38 @@ function WebApp() {
                 </Button>
               ) : null}
             </div>
+            {appUpdate.supported ? (
+              <div className="deviceRow">
+                <div>
+                  <div>App</div>
+                  <div className="muted">
+                    {appUpdate.updateError ??
+                      (appUpdate.updateState === "downloading"
+                        ? `Downloading${appUpdate.downloadProgress === null ? "…" : ` ${appUpdate.downloadProgress}%`}`
+                        : appUpdate.updateState === "available"
+                          ? `Version ${appUpdate.availableVersion} is available`
+                          : appUpdate.updateState === "up-to-date"
+                            ? "Up to date"
+                            : "")}
+                  </div>
+                </div>
+                <div className="actions">
+                  {appUpdate.updateState === "available" ? (
+                    <Button size="sm" variant="outline" type="button" onClick={appUpdate.installUpdate}>
+                      Update
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="ghost"
+                      type="button"
+                      disabled={appUpdate.updateState === "checking" || appUpdate.updateState === "downloading"}
+                      onClick={() => void appUpdate.checkForUpdates(true)}
+                    >
+                      {appUpdate.updateState === "checking" ? "Checking…" : "Check for updates"}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ) : null}
             <TokenLabelDialog
               open={tokenDialogOpen}
               onOpenChange={setTokenDialogOpen}

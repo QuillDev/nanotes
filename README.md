@@ -29,7 +29,7 @@ Press <kbd>⌥</kbd>+<kbd>N</kbd> on macOS or <kbd>Alt</kbd>+<kbd>N</kbd> on Lin
 - macOS (Apple Silicon or Intel)
 - Windows 10 or 11 (x64)
 - Linux (x86_64) with a desktop session
-- Android 7.0+ (arm64)
+- Android 7.0+
 
 ## Install
 
@@ -73,7 +73,7 @@ On your phone, download and open the latest APK (allow installs from your browse
 
 https://github.com/QuillDev/nanotes/releases/latest/download/nanotes.apk
 
-To update, install the newer APK the same way; notes stay on the phone. Notes live in the app's private storage, so sign in to a sync server (Settings → Sync) to share them with your other machines.
+The app is the web app of your own sync server (see [docs/SYNC.md](docs/SYNC.md)): on first launch it asks for the server's address, then you sign in as you would in a browser. It updates itself from GitHub releases (Devices → Check for updates).
 
 ### Build from source
 
@@ -131,7 +131,7 @@ bun run test:editor                      # ghost-text/editing regressions
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md). In short: the Electron shell in `desktop/` owns platform behavior (window, global hotkey, file I/O, updates), while the React app owns the portable editor, autosave, and settings. Android still uses the Tauri app in `src-tauri/`.
+See [docs/architecture.md](docs/architecture.md). In short: the Electron shell in `desktop/` owns platform behavior (window, global hotkey, file I/O, updates), while the React app owns the portable editor, autosave, and settings. Android (`android/`) is a small Kotlin WebView around the sync server's web app.
 
 NaNotes is macOS-first today. Linux is a possible future shell target — see the architecture doc for the roadmap.
 

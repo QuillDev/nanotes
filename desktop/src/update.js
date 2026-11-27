@@ -1,5 +1,5 @@
 // Self-updates from the release's `latest.json`, the same manifest and minisign key the earlier
-// (Tauri) app used, so old installs update straight into this one. Windows runs the new
+// app used, so old installs update straight into this one. Windows runs the new
 // installer; macOS swaps the .app bundle in place. Linux updates through its package.
 import { execFile, spawn } from "node:child_process"
 import { createWriteStream } from "node:fs"
@@ -35,7 +35,7 @@ export function platformKey(platform = process.platform, arch = process.arch, pa
 export function pick(manifest, currentVersion, key) {
   const entry = key ? manifest?.platforms?.[key] : null
   if (!entry?.url || !entry?.signature || !manifest.version || !newer(manifest.version, currentVersion)) return null
-  return { version: String(manifest.version).replace(/^v/, ""), date: manifest.pub_date ?? null, body: manifest.notes ?? null, url: entry.url, signature: entry.signature, rawJson: manifest }
+  return { version: String(manifest.version).replace(/^v/, ""), date: manifest.pub_date ?? null, body: manifest.notes ?? null, url: entry.url, signature: entry.signature }
 }
 
 /** A fixed name for the download: never taken from the URL, so it can't leave the temp folder. */
@@ -55,7 +55,7 @@ export class Updater {
     this.nextRid = 1
   }
 
-  /** `plugin:updater|check`: metadata for the page's Update object, or null. */
+  /** The update this install can take (the `update_check` command), or null. */
   async check() {
     const resp = await fetch(this.endpoint, { signal: AbortSignal.timeout(30_000), headers: { accept: "application/json" } })
     if (!resp.ok) throw new Error(`update check failed (${resp.status})`)
@@ -63,14 +63,14 @@ export class Updater {
     if (!update) return null
     const rid = this.nextRid++
     this.pending.set(rid, update)
-    return { rid, currentVersion: this.currentVersion, version: update.version, date: update.date, body: update.body, rawJson: update.rawJson }
+    return { rid, currentVersion: this.currentVersion, version: update.version, date: update.date, body: update.body }
   }
 
   close(rid) {
     this.pending.delete(rid)
   }
 
-  /** Downloads, verifies and installs update `rid`; `emit` gets Tauri-style progress events. */
+  /** Downloads, verifies and installs update `rid`; `emit` gets Started/Progress/Finished events. */
   async downloadAndInstall(rid, emit) {
     const update = this.pending.get(rid)
     if (!update) throw new Error("update is no longer available")

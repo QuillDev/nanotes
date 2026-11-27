@@ -26,3 +26,15 @@ jobs:
       - run: bun ci
       - run: bun ci --cwd desktop --ignore-scripts
       - run: bun run check
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+        working-directory: android

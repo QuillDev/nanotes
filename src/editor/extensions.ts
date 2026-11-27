@@ -11,9 +11,9 @@ import { markdown } from '@codemirror/lang-markdown';
 import { syntaxHighlighting } from '@codemirror/language';
 import { Prec, type Extension } from '@codemirror/state';
 import { drawSelection, EditorView, keymap } from '@codemirror/view';
-import { invoke } from '@tauri-apps/api/core';
 import { FILE_ICON_PATH, FOLDER_ICON_PATH } from '../components/Icons';
-import { IS_TAURI, type PathSuggestion } from '../desktop/config';
+import { IS_DESKTOP, invoke } from '../desktop/bridge';
+import type { PathSuggestion } from '../desktop/config';
 import {
   codeBlockLineDecorations,
   fenceClickGuard,
@@ -71,7 +71,7 @@ function applyPathCompletion(suggestion: PathSuggestion) {
 // fragment looks like a path (`/`, `./`, `../`, `~/`). Files and directories are
 // both offered — directories so you can keep drilling down to the file you want.
 async function pathCompletionSource(context: CompletionContext): Promise<CompletionResult | null> {
-  if (!IS_TAURI) {
+  if (!IS_DESKTOP) {
     return null;
   }
   const line = context.state.doc.lineAt(context.pos);
@@ -87,7 +87,7 @@ async function pathCompletionSource(context: CompletionContext): Promise<Complet
 
   let suggestions: PathSuggestion[];
   try {
-    suggestions = await invoke<PathSuggestion[]>('suggest_paths', { input: fragment, filter: 'all' });
+    suggestions = await invoke('suggest_paths', { input: fragment, filter: 'all' });
   } catch {
     return null;
   }

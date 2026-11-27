@@ -1,7 +1,16 @@
 import type React from 'react';
-import { homeDir } from '@tauri-apps/api/path';
-import { getCurrentWindow } from '@tauri-apps/api/window';
-import { openPath, openUrl } from '@tauri-apps/plugin-opener';
+import type { AppConfig } from '../../shared/ipc';
+import { IS_DESKTOP, invoke } from './bridge';
+
+export type {
+  AppConfig,
+  NoteEntry,
+  NoteSaveResult,
+  PairingPollResult,
+  PairingStartResult,
+  PathSuggestion,
+  SyncResult,
+} from '../../shared/ipc';
 
 export interface NoteState {
   notesDir: string;
@@ -12,105 +21,16 @@ export interface NoteState {
   message: string;
 }
 
-export interface NoteEntry {
-  path: string;
-  title: string;
-  modifiedMs: number;
-}
-
-export interface NoteSaveResult {
-  path: string;
-  title: string;
-}
-
-export interface AppConfig {
-  notesDir: string;
-  notePath: string;
-  hotkey: string;
-  pinnedPaths: string[];
-  glassTint: string;
-  glassOpacity: number;
-  glassBlur: number;
-  syncUrl: string;
-  syncToken: string;
-  syncDeviceName: string;
-}
-
-export interface PairingStartResult {
-  code: string;
-  pollToken: string;
-  verificationUrl: string;
-  expiresAt: number;
-}
-
-export interface PairingPollResult {
-  status: 'pending' | 'approved' | 'expired';
-  token?: string | null;
-  deviceName?: string | null;
-}
-
-export interface SyncResult {
-  pulled: number;
-  pushed: number;
-  conflicts: number;
-  rev: number;
-  pinnedPaths: string[];
-  activeNotePath?: string | null;
-  activeNoteId?: string | null;
-  activeNoteChanged: boolean;
-}
-
 export interface HiddenRange {
   from: number;
   to: number;
 }
-
-export interface PathSuggestion {
-  value: string;
-  label: string;
-  isDir: boolean;
-}
-
-export interface AndroidUpdateCandidate {
-  version: string;
-  apkUrl: string;
-  sha256: string;
-}
-
-export interface AndroidUpdaterBridge {
-  checkForUpdate: (requestId: string) => void;
-  downloadAndInstall: (version: string, apkUrl: string, sha256: string) => void;
-}
-
-export type AndroidUpdaterEvent =
-  | {
-      type: 'check';
-      requestId: string;
-      available?: boolean;
-      version?: string;
-      apkUrl?: string;
-      sha256?: string;
-      error?: string;
-    }
-  | { type: 'install-started' }
-  | { type: 'install-progress'; percent: number }
-  | { type: 'install-permission' }
-  | { type: 'install-cancelled' }
-  | { type: 'install-success' }
-  | { type: 'install-error'; message?: string };
 
 export type ShellStyle = React.CSSProperties & {
   '--glass-bg': string;
   '--glass-blur': string;
   '--glass-softness': string;
 };
-
-declare global {
-  interface Window {
-    NanotesAndroidUpdater?: AndroidUpdaterBridge;
-    __nanotesAndroidUpdaterEvent?: (event: AndroidUpdaterEvent) => void;
-  }
-}
 
 export const DEFAULT_NOTES_DIR = '~/.nanotes';
 export const DEFAULT_NOTE = 'Untitled.md';
@@ -125,7 +45,6 @@ export const DEFAULT_HOTKEY = 'alt+KeyN';
 export const DEFAULT_GLASS_TINT = '#09090b';
 export const DEFAULT_GLASS_OPACITY = 0.32;
 export const DEFAULT_GLASS_BLUR = 0;
-export const IS_TAURI = '__TAURI_INTERNALS__' in window;
 
 export const HOTKEY_MODIFIER_CODES = new Set([
   'ShiftLeft',
@@ -290,20 +209,20 @@ export function writeBrowserPreviewConfig(config: AppConfig) {
 
 let homeDirCache: string | null = null;
 
-// Expands a leading `~` to the absolute home directory (Tauri only).
+// Expands a leading `~` to the absolute home directory (desktop only).
 export async function expandHome(path: string): Promise<string> {
   if (!path.startsWith('~')) {
     return path;
   }
   if (!homeDirCache) {
-    homeDirCache = (await homeDir()).replace(/\/+$/, '');
+    homeDirCache = (await invoke('home_dir')).replace(/\/+$/, '');
   }
   return homeDirCache + path.slice(1);
 }
 
 export function openExternalUrl(url: string) {
-  if (IS_TAURI) {
-    void openUrl(url).catch(() => undefined);
+  if (IS_DESKTOP) {
+    void invoke('open_url', { url }).catch(() => undefined);
   } else {
     window.open(url, '_blank', 'noopener,noreferrer');
   }
@@ -314,21 +233,21 @@ export function openExternalUrl(url: string) {
 // system default app for that type — the image viewer for a `.png`, etc.
 export function openLinkTarget(target: string) {
   const trimmed = target.trim();
-  if (/^(https?:|mailto:|data:|blob:|asset:|tauri:)/i.test(trimmed)) {
+  if (/^(https?:|mailto:|data:|blob:|asset:)/i.test(trimmed)) {
     openExternalUrl(trimmed);
     return;
   }
-  if (!IS_TAURI) {
+  if (!IS_DESKTOP) {
     window.open(trimmed, '_blank', 'noopener,noreferrer');
     return;
   }
   void expandHome(trimmed)
-    .then(path => openPath(path))
+    .then(path => invoke('open_path', { path }))
     .catch(() => undefined);
 }
 
 export async function hideOverlay() {
-  if (IS_TAURI) {
-    await getCurrentWindow().hide();
+  if (IS_DESKTOP) {
+    await invoke('hide_window');
   }
 }

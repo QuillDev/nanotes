@@ -1,10 +1,10 @@
 # Releasing NaNotes
 
-NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Windows (x64), Linux (x86_64), and Android (arm64) in parallel via `.github/workflows/release.yml`. The desktop apps are the Electron shell in `desktop/` (built with electron-builder); Android is still the Tauri app in `src-tauri/`. The workflow only runs when cutting a release (`v*` tag push or manual `workflow_dispatch`), keeping pull requests fast.
+NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Windows (x64), Linux (x86_64), and Android (arm64) in parallel via `.github/workflows/release.yml`. The desktop apps are the Electron shell in `desktop/` (built with electron-builder); Android is the Kotlin WebView shell in `android/` (built with Gradle). The workflow only runs when cutting a release (`v*` tag push or manual `workflow_dispatch`), keeping pull requests fast.
 
 ## Cutting a release
 
-1. Bump the version in `package.json` (the desktop apps take it from there), plus `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` for Android, then commit and merge to `main`.
+1. Bump the version in `package.json` (the desktop and Android apps take it from there), then commit and merge to `main`.
 
 2. Tag and push:
 
@@ -20,8 +20,8 @@ NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Wi
    - macOS Intel: `NaNotes_<version>_x64.app.tar.gz` (ad-hoc signed + updater `.sig`)
    - Windows x64: `NaNotes_<version>_x64-setup.exe` (NSIS installer + updater `.sig`)
    - Linux x86_64: `nanotes_<version>_linux_x86_64.tar.gz` (used by `install.sh`) and `.deb`
-   - Android arm64: `nanotes.apk`, kept under a fixed name so `releases/latest/download/nanotes.apk` always points at the newest build
-   - In-app updater manifest: `latest.json` (signed with the `TAURI_SIGNING_PRIVATE_KEY` Actions secret, matching `desktop/pubkey.txt`; installs of the earlier Tauri desktop app read the same manifest and update straight into the Electron app)
+   - Android: `nanotes.apk`, kept under a fixed name so `releases/latest/download/nanotes.apk` always points at the newest build
+   - In-app updater manifest: `latest.json`, pointing at the `.sig` files `desktop/scripts/sign-update.mjs` writes with the updater key Actions secret (named in `release.yml`), matching `desktop/pubkey.txt`. Installs of the earlier desktop app read the same manifest and update straight into the Electron app
 
 ## Automatic package manager updates
 

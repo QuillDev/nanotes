@@ -1,6 +1,6 @@
 import React from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { IS_TAURI, SAVE_DELAY_MS, type NoteSaveResult, type NoteState } from '../desktop/config';
+import { IS_DESKTOP, invoke } from '../desktop/bridge';
+import { SAVE_DELAY_MS, type NoteState } from '../desktop/config';
 
 export function useDebouncedSave(
   state: NoteState,
@@ -20,12 +20,12 @@ export function useDebouncedSave(
       // is now in the editor.
       const gen = noteGenRef.current;
       setState(prev => ({ ...prev, status: 'saving', message: 'Saving…' }));
-      if (!IS_TAURI) {
+      if (!IS_DESKTOP) {
         window.localStorage.setItem('nanotes:browserPreviewContent', state.content);
         setState(prev => ({ ...prev, savedContent: prev.content, status: 'saved', message: 'Preview saved' }));
         return;
       }
-      void invoke<NoteSaveResult>('write_note', {
+      void invoke('write_note', {
         notesDir: state.notesDir,
         notePath: state.notePath,
         content: state.content,

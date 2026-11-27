@@ -2,8 +2,8 @@ import { EditorState, StateField } from '@codemirror/state';
 import type { Range, Transaction } from '@codemirror/state';
 import type { DecorationSet } from '@codemirror/view';
 import { Decoration, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
-import { convertFileSrc } from '@tauri-apps/api/core';
-import { expandHome, IS_TAURI, openLinkTarget, type HiddenRange } from '../desktop/config';
+import { IS_DESKTOP, assetUrl } from '../desktop/bridge';
+import { expandHome, openLinkTarget, type HiddenRange } from '../desktop/config';
 
 class BulletWidget extends WidgetType {
   eq() {
@@ -34,16 +34,16 @@ const IMAGE_LINK_RE =
 
 // Turns a Markdown link target into something the webview can load: http(s)/data
 // URLs pass through, `~` expands to the home dir, and local paths go through the
-// Tauri asset protocol (file:// is blocked in the webview).
+// desktop app's asset:// protocol (file:// is blocked in the page).
 async function resolveImageSrc(raw: string): Promise<string> {
   const path = raw.trim();
-  if (/^(https?:|data:|blob:|asset:|tauri:)/i.test(path)) {
+  if (/^(https?:|data:|blob:|asset:)/i.test(path)) {
     return path;
   }
-  if (!IS_TAURI) {
+  if (!IS_DESKTOP) {
     return path;
   }
-  return convertFileSrc(await expandHome(path));
+  return assetUrl(await expandHome(path));
 }
 
 // Block widget that renders the referenced image on its own line, below the link.

@@ -1,12 +1,12 @@
 import React from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { Input } from 'nakomponents';
-import { IS_TAURI, type PathSuggestion } from '../desktop/config';
+import { IS_DESKTOP, invoke } from '../desktop/bridge';
+import type { PathSuggestion } from '../desktop/config';
 import { PathGlyph } from './Icons';
 
 // A text input that offers filesystem path completions while the value looks
 // like a path (starts with `/`, `./`, `../`, or `~/`). Suggestions come from
-// the `suggest_paths` Tauri command; outside Tauri it degrades to a plain input.
+// the `suggest_paths` desktop command; in a browser it degrades to a plain input.
 export function PathInput({
   value,
   onChange,
@@ -22,11 +22,11 @@ export function PathInput({
   const requestId = React.useRef(0);
 
   const refresh = React.useCallback((next: string) => {
-    if (!IS_TAURI) {
+    if (!IS_DESKTOP) {
       return;
     }
     const id = ++requestId.current;
-    void invoke<PathSuggestion[]>('suggest_paths', { input: next, filter: 'dirs' })
+    void invoke('suggest_paths', { input: next, filter: 'dirs' })
       .then(results => {
         // Ignore responses that lost the race to a newer keystroke.
         if (id !== requestId.current) {

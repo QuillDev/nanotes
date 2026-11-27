@@ -1,0 +1,9 @@
+<resources>
+    <color name="ic_launcher_background">#18181B</color>
+    <color name="window_background">#09090B</color>
+    <style name="Theme.Nanotes" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
