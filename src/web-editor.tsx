@@ -18,8 +18,8 @@ const webHighlight = HighlightStyle.define([
   { tag: tags.emphasis, color: "#f8b4cb", fontStyle: "italic" },
   { tag: tags.strikethrough, color: "#8b91a7", textDecoration: "line-through" },
   { tag: tags.monospace, color: "#ff9fc0", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
-  { tag: tags.link, color: "#ff7aa5", textDecoration: "underline" },
-  { tag: tags.url, color: "#ff7aa5" },
+  { tag: tags.link, color: "#ec4899", textDecoration: "underline" },
+  { tag: tags.url, color: "#ec4899" },
   { tag: tags.quote, color: "#b5bbcf", fontStyle: "italic" },
   { tag: tags.meta, color: "#686e85" },
   { tag: tags.processingInstruction, color: "#686e85" },
@@ -35,16 +35,16 @@ const webEditorTheme = EditorView.theme(
       height: "100%",
     },
     ".cm-content": {
-      caretColor: "#f65c8e",
+      caretColor: "#db2777",
       fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       minHeight: "100%",
     },
     ".cm-cursor, .cm-dropCursor": {
-      borderLeftColor: "#f65c8e",
+      borderLeftColor: "#db2777",
       borderLeftWidth: "2px",
     },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-      backgroundColor: "rgba(246, 92, 142, 0.28) !important",
+      backgroundColor: "rgba(219, 39, 119, 0.28) !important",
     },
     ".cm-placeholder": {
       color: "#686e85",

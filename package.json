@@ -14,16 +14,18 @@
     "dev": "tauri dev",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
-    "build:web": "bun -e \"require('node:fs').rmSync('dist-web',{recursive:true,force:true})\" && bun build src/web-app.tsx --outdir dist-web --target browser --minify --splitting --define 'process.env.NODE_ENV=\"production\"'",
+    "build:web": "vite build --config vite.web.config.ts",
     "tauri:build": "tauri build",
     "server": "bun run server/main.ts",
     "server:setup-link": "bun run server/setup-link.ts",
-    "typecheck:server": "tsc -p tsconfig.server.json",
+    "typecheck": "tsc && tsc -p tsconfig.server.json",
+    "lint": "oxlint --deny-warnings",
+    "doctor": "react-doctor --yes --blocking warning",
     "test": "bun test tests/",
     "test:server": "bun test tests/server.test.ts",
     "test:collab": "bun test tests/collab.test.ts",
-    "check": "tsc && vite build && bun run build:web && tsc -p tsconfig.server.json",
-    "test:editor": "node scripts/test-editor.mjs"
+    "test:editor": "node scripts/test-editor.mjs",
+    "check": "bun run typecheck && bun run lint && bun run doctor && bun run test && bun run build && bun run build:web"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -48,7 +50,8 @@
     "@tauri-apps/plugin-process": "^2.4.0",
     "@tauri-apps/plugin-updater": "^2.14.1",
     "@uiw/react-codemirror": "^4.25.10",
-    "@vitejs/plugin-react": "^5.1.0",
+    "lucide-react": "^1.82.0",
+    "nakomponents": "github:QuillDev/nakomponents#c185a56",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "y-codemirror.next": "^0.3.6",
@@ -57,12 +60,18 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
     "@tauri-apps/cli": "^2.12.6",
     "@types/bun": "^1.4.5",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.3.0",
+    "oxlint": "^1.95.0",
+    "oxlint-plugin-react-doctor": "^0.9.23",
     "playwright": "^1.64.0",
-    "typescript": "^5.9.3",
-    "vite": "^7.2.6"
+    "react-doctor": "^0.9.23",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.4.0"
   }
 }

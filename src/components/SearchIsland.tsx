@@ -1,7 +1,8 @@
 import React from 'react';
 import { appShortcutLabel, type NoteEntry } from '../desktop/config';
 import { useMorphHeight } from '../morph';
-import { PinIcon, TrashIcon } from './Icons';
+import { Pin, Trash2 } from 'lucide-react';
+import { Button } from 'nakomponents';
 
 export interface SearchIslandProps {
   searchOpen: boolean;
@@ -117,29 +118,33 @@ export function SearchIsland({
                 >
                   <span className="noteResultTitle">{note.title}</span>
                   <span className="noteResultActions">
-                    <button
+                    <Button
                       aria-label={pinned ? 'Unpin note' : 'Pin note'}
                       aria-pressed={pinned}
                       className="noteResultAction noteResultAction-pin"
+                      size="icon-xs"
+                      variant="ghost"
                       type="button"
                       onClick={event => {
                         event.stopPropagation();
                         onTogglePin(note.path);
                       }}
                     >
-                      <PinIcon filled={pinned} />
-                    </button>
-                    <button
+                      <Pin fill={pinned ? 'currentColor' : 'none'} />
+                    </Button>
+                    <Button
                       aria-label="Delete note"
                       className="noteResultAction noteResultAction-delete"
+                      size="icon-xs"
+                      variant="ghost"
                       type="button"
                       onClick={event => {
                         event.stopPropagation();
                         onDeleteNote(note.path);
                       }}
                     >
-                      <TrashIcon />
-                    </button>
+                      <Trash2 />
+                    </Button>
                   </span>
                 </div>
               );

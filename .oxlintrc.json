@@ -1,0 +1,265 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "extends": [
+    "./node_modules/nakomponents/oxlint.json"
+  ],
+  "jsPlugins": [
+    {
+      "name": "react-doctor",
+      "specifier": "oxlint-plugin-react-doctor"
+    }
+  ],
+  "ignorePatterns": [
+    "dist",
+    "dist-web",
+    "src-tauri"
+  ],
+  "rules": {
+    "jsx-a11y/label-has-associated-control": [
+      "error",
+      {
+        "controlComponents": [
+          "Input",
+          "PathInput"
+        ]
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "scripts/test-editor.mjs"
+      ],
+      "rules": {
+        "eslint/no-shadow": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/test-editor.mjs",
+        "tests/collab.test.ts",
+        "tests/server.test.ts"
+      ],
+      "rules": {
+        "eslint/no-await-in-loop": "off"
+      }
+    },
+    {
+      "files": [
+        "server/app.ts"
+      ],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": [
+        "server/app.ts",
+        "server/collab.ts",
+        "src/collab.ts",
+        "src/components/SettingsOverlay.tsx",
+        "src/desktop/config.ts",
+        "src/hooks/useAppUpdater.ts",
+        "src/hooks/useNoteSync.ts",
+        "src/web-app.tsx"
+      ],
+      "rules": {
+        "eslint/complexity": "off"
+      }
+    },
+    {
+      "files": [
+        "server/app.ts",
+        "src/components/SettingsOverlay.tsx",
+        "src/hooks/useAppUpdater.ts",
+        "src/hooks/useNoteSync.ts",
+        "src/main.tsx",
+        "src/web-app.tsx",
+        "tests/server.test.ts"
+      ],
+      "rules": {
+        "eslint/max-lines-per-function": "off"
+      }
+    },
+    {
+      "files": [
+        "server/collab.ts"
+      ],
+      "rules": {
+        "unicorn/no-useless-spread": "off"
+      }
+    },
+    {
+      "files": [
+        "server/notes.ts"
+      ],
+      "rules": {
+        "eslint/no-control-regex": "off"
+      }
+    },
+    {
+      "files": [
+        "src/components/PathInput.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/no-noninteractive-element-to-interactive-role": "off"
+      }
+    },
+    {
+      "files": [
+        "src/components/PathInput.tsx",
+        "src/components/SearchIsland.tsx",
+        "src/components/SettingsOverlay.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/prefer-tag-over-role": "off"
+      }
+    },
+    {
+      "files": [
+        "src/components/PathInput.tsx",
+        "src/editor/markdown-decorations.ts",
+        "src/hooks/useAppUpdater.ts",
+        "src/hooks/useDebouncedSave.ts",
+        "src/hooks/useNoteSync.ts",
+        "src/main.tsx"
+      ],
+      "rules": {
+        "promise/always-return": "off"
+      }
+    },
+    {
+      "files": [
+        "src/components/SearchIsland.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/interactive-supports-focus": "off"
+      }
+    },
+    {
+      "files": [
+        "src/components/SearchIsland.tsx",
+        "src/main.tsx",
+        "src/web-app.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/no-autofocus": "off"
+      }
+    },
+    {
+      "files": [
+        "src/components/SearchIsland.tsx",
+        "src/web-app.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/click-events-have-key-events": "off"
+      }
+    },
+    {
+      "files": [
+        "src/editor/CollabEditor.tsx",
+        "src/hooks/useNoteSync.ts",
+        "src/main.tsx",
+        "src/web-app.tsx",
+        "src/web-editor.tsx"
+      ],
+      "rules": {
+        "react/refs": "off"
+      }
+    },
+    {
+      "files": [
+        "src/editor/markdown-decorations.ts"
+      ],
+      "rules": {
+        "eslint/no-useless-escape": "off",
+        "unicorn/no-array-reverse": "off"
+      }
+    },
+    {
+      "files": [
+        "src/editor/markdown-decorations.ts",
+        "src/hooks/useNoteSync.ts",
+        "src/main.tsx",
+        "src/web-app.tsx",
+        "tests/server.test.ts"
+      ],
+      "rules": {
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "src/editor/markdown-decorations.ts",
+        "tests/server.test.ts"
+      ],
+      "rules": {
+        "unicorn/prefer-add-event-listener": "off"
+      }
+    },
+    {
+      "files": [
+        "src/hooks/useAppUpdater.ts"
+      ],
+      "rules": {
+        "eslint/no-underscore-dangle": "off"
+      }
+    },
+    {
+      "files": [
+        "src/hooks/useAppUpdater.ts",
+        "src/main.tsx"
+      ],
+      "rules": {
+        "react-hooks/exhaustive-deps": "off"
+      }
+    },
+    {
+      "files": [
+        "src/hooks/useNoteSync.ts",
+        "src/main.tsx",
+        "src/morph.ts",
+        "src/web-editor.tsx"
+      ],
+      "rules": {
+        "react/exhaustive-effect-dependencies": "off"
+      }
+    },
+    {
+      "files": [
+        "src/hooks/useNoteSync.ts",
+        "src/main.tsx",
+        "src/web-app.tsx"
+      ],
+      "rules": {
+        "react/set-state-in-effect": "off"
+      }
+    },
+    {
+      "files": [
+        "src/web-app.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/no-noninteractive-element-interactions": "off",
+        "oxc/no-map-spread": "off",
+        "react-perf/jsx-no-jsx-as-prop": "off"
+      }
+    },
+    {
+      "files": [
+        "src/web-editor.tsx"
+      ],
+      "rules": {
+        "react/memo-dependencies": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/server.test.ts"
+      ],
+      "rules": {
+        "unicorn/no-useless-fallback-in-spread": "off"
+      }
+    }
+  ]
+}
