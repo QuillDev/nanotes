@@ -3,6 +3,7 @@ import {
   Awareness,
   applyAwarenessUpdate,
   encodeAwarenessUpdate,
+  removeAwarenessStates,
 } from "y-protocols/awareness";
 import { applyTextDiff, base64ToBytes, bytesToBase64 } from "../shared/text-diff";
 
@@ -96,7 +97,7 @@ export class NoteCollabSession {
   path: string | null = null;
 
   private destroyed = false;
-  private persistTimer: number | null = null;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private hasSyncedWithServer = false;
   private pendingLocalDiff: string | null = null;
   private readonly onDocUpdate: (update: Uint8Array, origin: unknown) => void;
@@ -225,8 +226,13 @@ export class NoteCollabSession {
       // Ignore invalid server state vector.
     }
 
-    // Broadcast our own cursor/presence now that we joined.
-    this.client.sendAwareness(this.noteId, encodeAwarenessUpdate(this.awareness, [this.doc.clientID]));
+    // Bump and broadcast our own cursor/presence now that we joined.
+    // Re-setting local state increments the y-protocols awareness clock so the
+    // server and peers accept our cursor again after a disconnect/reconnect.
+    const localState = this.awareness.getLocalState();
+    if (localState !== null) {
+      this.awareness.setLocalState(localState);
+    }
 
     this.options.onMeta?.({
       rev: msg.rev,
@@ -266,7 +272,7 @@ export class NoteCollabSession {
   handleNoteEvent(event: LiveNoteEvent): void {
     if (this.destroyed || event.id !== this.noteId) return;
     if (event.deletedAt !== null) {
-      this.options.onDeleted?.();
+      this.handleDeleted();
       return;
     }
     this.rev = event.rev;
@@ -279,10 +285,34 @@ export class NoteCollabSession {
     });
   }
 
+  handleDisconnect(): void {
+    if (this.destroyed) return;
+    this.hasSyncedWithServer = false;
+    const remoteIds: number[] = [];
+    for (const id of this.awareness.getStates().keys()) {
+      if (id !== this.doc.clientID) {
+        remoteIds.push(id);
+      }
+    }
+    if (remoteIds.length > 0) {
+      removeAwarenessStates(this.awareness, remoteIds, REMOTE_ORIGIN);
+      // Clear cached clocks for disconnected peers so still-active peers are
+      // re-accepted with their unchanged clocks when the server resends them on reconnect.
+      for (const id of remoteIds) {
+        this.awareness.meta.delete(id);
+      }
+    }
+  }
+
+  handleDeleted(): void {
+    if (this.destroyed) return;
+    this.options.onDeleted?.();
+  }
+
   private schedulePersist(immediate = false): void {
     if (!this.options.onPersist || !this.ready) return;
     if (this.persistTimer !== null) {
-      window.clearTimeout(this.persistTimer);
+      globalThis.clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
     const flush = () => {
@@ -298,7 +328,7 @@ export class NoteCollabSession {
       flush();
       return;
     }
-    this.persistTimer = window.setTimeout(() => {
+    this.persistTimer = globalThis.setTimeout(() => {
       this.persistTimer = null;
       flush();
     }, 350);
@@ -307,7 +337,7 @@ export class NoteCollabSession {
   destroy(): void {
     if (this.destroyed) return;
     if (this.persistTimer !== null) {
-      window.clearTimeout(this.persistTimer);
+      globalThis.clearTimeout(this.persistTimer);
       this.persistTimer = null;
       if (this.ready && this.options.onPersist) {
         this.options.onPersist(
@@ -345,9 +375,10 @@ export class CollabClient {
   private authed = false;
   private closed = false;
   private reconnectAttempt = 0;
-  private reconnectTimer: number | null = null;
-  private pingTimer: number | null = null;
-  private pongTimer: number | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private session: NoteCollabSession | null = null;
   private readonly handleOnline: () => void;
   private readonly handleVisible: () => void;
@@ -371,9 +402,16 @@ export class CollabClient {
     this.connect();
   }
 
+  private clearConnectTimer(): void {
+    if (this.connectTimer !== null) {
+      globalThis.clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
   private clearPongTimer(): void {
     if (this.pongTimer !== null) {
-      window.clearTimeout(this.pongTimer);
+      globalThis.clearTimeout(this.pongTimer);
       this.pongTimer = null;
     }
   }
@@ -383,7 +421,7 @@ export class CollabClient {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (!this.send({ type: "ping" })) return;
     if (this.pongTimer !== null) return;
-    this.pongTimer = window.setTimeout(() => {
+    this.pongTimer = globalThis.setTimeout(() => {
       this.pongTimer = null;
       if (this.ws === ws && !this.closed) {
         try {
@@ -406,7 +444,7 @@ export class CollabClient {
       return;
     }
     if (this.reconnectTimer !== null) {
-      window.clearTimeout(this.reconnectTimer);
+      globalThis.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.reconnectAttempt = 0;
@@ -442,14 +480,26 @@ export class CollabClient {
     }
     this.ws = ws;
     this.authed = false;
+    this.clearConnectTimer();
+    this.connectTimer = globalThis.setTimeout(() => {
+      this.connectTimer = null;
+      if (this.ws === ws && !this.closed && ws.readyState === WebSocket.CONNECTING) {
+        try {
+          ws.close(4000, "connect timeout");
+        } catch {
+          // Ignore close errors on stalled sockets.
+        }
+      }
+    }, 10_000);
 
     ws.addEventListener("open", () => {
       if (this.ws !== ws || this.closed) return;
+      this.clearConnectTimer();
       if (this.options.token) {
         this.send({ type: "auth", token: this.options.token });
       }
-      if (this.pingTimer !== null) window.clearInterval(this.pingTimer);
-      this.pingTimer = window.setInterval(() => {
+      if (this.pingTimer !== null) globalThis.clearInterval(this.pingTimer);
+      this.pingTimer = globalThis.setInterval(() => {
         this.probeHealth(5_000);
       }, 20_000);
     });
@@ -531,6 +581,14 @@ export class CollabClient {
       }
 
       if (type === "error" && typeof msg["message"] === "string") {
+        if (
+          msg["message"] === "note not found" &&
+          this.session &&
+          this.session.noteId === msg["noteId"]
+        ) {
+          this.session.handleDeleted();
+          return;
+        }
         this.options.onError?.(msg["message"]);
       }
     });
@@ -539,11 +597,13 @@ export class CollabClient {
       if (this.ws !== ws) return;
       this.ws = null;
       this.authed = false;
+      this.clearConnectTimer();
       if (this.pingTimer !== null) {
-        window.clearInterval(this.pingTimer);
+        globalThis.clearInterval(this.pingTimer);
         this.pingTimer = null;
       }
       this.clearPongTimer();
+      this.session?.handleDisconnect();
       this.setStatus("disconnected");
       if (!this.closed && event.code !== 4401) {
         this.scheduleReconnect();
@@ -559,7 +619,7 @@ export class CollabClient {
     if (this.closed || this.reconnectTimer !== null) return;
     const delay = Math.min(10_000, Math.round(250 * Math.pow(1.8, this.reconnectAttempt)));
     this.reconnectAttempt += 1;
-    this.reconnectTimer = window.setTimeout(() => {
+    this.reconnectTimer = globalThis.setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
@@ -619,11 +679,12 @@ export class CollabClient {
       this.session = null;
     }
     if (this.reconnectTimer !== null) {
-      window.clearTimeout(this.reconnectTimer);
+      globalThis.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.clearConnectTimer();
     if (this.pingTimer !== null) {
-      window.clearInterval(this.pingTimer);
+      globalThis.clearInterval(this.pingTimer);
       this.pingTimer = null;
     }
     this.clearPongTimer();
