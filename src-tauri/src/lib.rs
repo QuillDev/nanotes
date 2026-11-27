@@ -2,8 +2,13 @@ mod sync;
 
 use std::{
     fs,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
-    time::SystemTime,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, OnceLock,
+    },
+    time::{Duration, Instant, SystemTime},
 };
 
 use nucleo_matcher::{
@@ -37,7 +42,7 @@ struct NoteEntry {
     modified_ms: u64,
 }
 
-#[derive(Deserialize, Serialize, Clone, Copy)]
+#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 struct WindowFrame {
     x: i32,
     y: i32,
@@ -256,6 +261,90 @@ fn relative_note_path(root: &Path, path: &Path) -> Result<String, String> {
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
 }
 
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Writes `bytes` to a dot-prefixed sibling temporary file and atomically renames
+/// it onto `path`. The leading dot keeps directory scans (`list_notes`, sync)
+/// from observing a partially written file.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let target = if fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    };
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let seq = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = target.with_file_name(format!(".{file_name}.{}.{seq}.tmp", std::process::id()));
+    if let Err(error) = fs::write(&tmp_path, bytes) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error.to_string());
+    }
+    if fs::rename(&tmp_path, &target).is_err() {
+        let _ = fs::remove_file(&tmp_path);
+        fs::write(&target, bytes).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn read_first_line(path: &Path) -> String {
+    let Ok(file) = fs::File::open(path) else {
+        return String::new();
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let _ = reader.read_line(&mut line);
+    line
+}
+
+fn list_recent_notes(root: &Path, limit: usize) -> Result<Vec<NoteEntry>, String> {
+    let mut entries: Vec<(PathBuf, String, SystemTime, u64)> = Vec::new();
+    for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') || path.is_dir() {
+            continue;
+        }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
+            continue;
+        }
+        let relative = relative_note_path(root, &path)?;
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let modified_ms = modified
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        entries.push((path, relative, modified, modified_ms));
+    }
+
+    entries.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+    entries.truncate(limit);
+
+    Ok(entries
+        .into_iter()
+        .map(|(path, relative, _, modified_ms)| {
+            let first_line = read_first_line(&path);
+            NoteEntry {
+                path: relative,
+                title: title_from_content(&first_line),
+                modified_ms,
+            }
+        })
+        .collect())
+}
+
 fn collect_notes(root: &Path) -> Result<Vec<NoteCandidate>, String> {
     let mut notes = Vec::new();
     for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
@@ -280,7 +369,7 @@ fn collect_notes(root: &Path) -> Result<Vec<NoteCandidate>, String> {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or(0);
-        let haystack = format!("{title} {relative} {content}").to_lowercase();
+        let haystack = format!("{title} {relative} {content}");
         notes.push(NoteCandidate {
             entry: NoteEntry {
                 path: relative,
@@ -323,7 +412,7 @@ fn write_note(
     let target = unique_note_path(&root, &title, current.as_deref());
 
     let target_rel = relative_note_path(&root, &target)?;
-    fs::write(&target, content).map_err(|error| error.to_string())?;
+    atomic_write(&target, content.as_bytes())?;
     if let Some(current) = current {
         if current != target && current.exists() {
             if let Ok(old_rel) = relative_note_path(&root, &current) {
@@ -360,20 +449,15 @@ fn move_to_trash(path: &Path) -> Result<(), String> {
 #[tauri::command]
 fn list_notes(notes_dir: String, query: String) -> Result<Vec<NoteEntry>, String> {
     let root = notes_root(&notes_dir)?;
-    let mut notes = collect_notes(&root)?;
-    let query = query.trim().to_string();
+    let query = query.trim();
 
     if query.is_empty() {
-        notes.sort_by_key(|candidate| std::cmp::Reverse(candidate.modified));
-        return Ok(notes
-            .into_iter()
-            .take(MAX_SEARCH_RESULTS)
-            .map(|candidate| candidate.entry)
-            .collect());
+        return list_recent_notes(&root, MAX_SEARCH_RESULTS);
     }
 
+    let notes = collect_notes(&root)?;
     let mut matcher = Matcher::new(Config::DEFAULT);
-    let pattern = Pattern::parse(&query, CaseMatching::Ignore, Normalization::Smart);
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
     let mut scored = pattern.match_list(notes, &mut matcher);
     // match_list already orders by descending score; keep that, but break ties
     // with most-recently-modified so equally-good matches stay deterministic.
@@ -497,12 +581,9 @@ fn normalize_app_config(mut config: AppConfig) -> AppConfig {
 
 fn write_app_config_file(app: &AppHandle, config: AppConfig) -> Result<(), String> {
     let path = app_config_path(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
     let contents = serde_json::to_string_pretty(&normalize_app_config(config))
         .map_err(|error| error.to_string())?;
-    fs::write(path, contents).map_err(|error| error.to_string())
+    atomic_write(&path, contents.as_bytes())
 }
 
 #[tauri::command]
@@ -587,12 +668,42 @@ fn apply_window_frame(window: &WebviewWindow, frame: WindowFrame) -> Result<(), 
         .map_err(|error| format!("failed to restore NaNotes window position: {error}"))
 }
 
-fn save_window_frame(window: &Window) {
+const WINDOW_FRAME_DEBOUNCE: Duration = Duration::from_millis(250);
+
+struct WindowFramePersistState {
+    last_written: Option<WindowFrame>,
+    pending: Option<(PathBuf, WindowFrame)>,
+    last_update: Option<Instant>,
+    seq: u64,
+    written_seq: u64,
+    worker_active: bool,
+}
+
+fn window_frame_state() -> &'static Mutex<WindowFramePersistState> {
+    static STATE: OnceLock<Mutex<WindowFramePersistState>> = OnceLock::new();
+    STATE.get_or_init(|| {
+        Mutex::new(WindowFramePersistState {
+            last_written: None,
+            pending: None,
+            last_update: None,
+            seq: 0,
+            written_seq: 0,
+            worker_active: false,
+        })
+    })
+}
+
+fn window_frame_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn capture_window_frame(window: &Window) -> Option<(PathBuf, WindowFrame)> {
     if window.label() != "main" {
-        return;
+        return None;
     }
     let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
-        return;
+        return None;
     };
     let frame = WindowFrame {
         x: position.x,
@@ -601,16 +712,142 @@ fn save_window_frame(window: &Window) {
         height: size.height,
     };
     if !is_plausible_frame(frame) {
-        return;
+        return None;
     }
-    let Ok(path) = window_frame_path(window.app_handle()) else {
+    let path = window_frame_path(window.app_handle()).ok()?;
+    Some((path, frame))
+}
+
+fn write_window_frame_if_latest(path: &Path, frame: WindowFrame, seq: u64) {
+    let Ok(_guard) = window_frame_write_lock().lock() else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+    {
+        let Ok(state) = window_frame_state().lock() else {
+            return;
+        };
+        if seq < state.written_seq {
+            return;
+        }
     }
     if let Ok(contents) = serde_json::to_string_pretty(&frame) {
-        let _ = fs::write(path, contents);
+        if atomic_write(path, contents.as_bytes()).is_ok() {
+            if let Ok(mut state) = window_frame_state().lock() {
+                if seq >= state.written_seq {
+                    state.written_seq = seq;
+                    state.last_written = Some(frame);
+                }
+            }
+        }
+    }
+}
+
+fn schedule_window_frame_save(window: &Window) {
+    let Some((path, frame)) = capture_window_frame(window) else {
+        return;
+    };
+    let should_spawn = {
+        let Ok(mut state) = window_frame_state().lock() else {
+            return;
+        };
+        if state.pending.as_ref().map(|(_, f)| *f) == Some(frame)
+            || (state.pending.is_none() && state.last_written == Some(frame))
+        {
+            return;
+        }
+        state.seq += 1;
+        state.pending = Some((path, frame));
+        state.last_update = Some(Instant::now());
+        if state.worker_active {
+            false
+        } else {
+            state.worker_active = true;
+            true
+        }
+    };
+
+    if should_spawn {
+        std::thread::spawn(|| loop {
+            let sleep_for = {
+                let Ok(mut state) = window_frame_state().lock() else {
+                    return;
+                };
+                match (state.pending.as_ref(), state.last_update) {
+                    (Some(_), Some(updated)) => {
+                        let elapsed = updated.elapsed();
+                        if elapsed < WINDOW_FRAME_DEBOUNCE {
+                            Some(WINDOW_FRAME_DEBOUNCE - elapsed)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => {
+                        state.worker_active = false;
+                        return;
+                    }
+                }
+            };
+
+            if let Some(delay) = sleep_for {
+                std::thread::sleep(delay);
+                continue;
+            }
+
+            let next = {
+                let Ok(mut state) = window_frame_state().lock() else {
+                    return;
+                };
+                if let Some(updated) = state.last_update {
+                    if updated.elapsed() < WINDOW_FRAME_DEBOUNCE {
+                        continue;
+                    }
+                }
+                let seq = state.seq;
+                let item = state.pending.take();
+                match item {
+                    Some((path, frame)) if state.last_written != Some(frame) => {
+                        Some((path, frame, seq))
+                    }
+                    _ => {
+                        state.worker_active = false;
+                        return;
+                    }
+                }
+            };
+
+            if let Some((path, frame, seq)) = next {
+                write_window_frame_if_latest(&path, frame, seq);
+                if let Ok(mut state) = window_frame_state().lock() {
+                    if state.pending.is_none() {
+                        state.worker_active = false;
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            }
+        });
+    }
+}
+
+fn flush_window_frame(window: &Window) {
+    let captured = capture_window_frame(window);
+    let to_write = {
+        let Ok(mut state) = window_frame_state().lock() else {
+            return;
+        };
+        let target = captured.or_else(|| state.pending.take());
+        state.pending = None;
+        match target {
+            Some((path, frame)) if state.last_written != Some(frame) => {
+                state.seq += 1;
+                Some((path, frame, state.seq))
+            }
+            _ => None,
+        }
+    };
+    if let Some((path, frame, seq)) = to_write {
+        write_window_frame_if_latest(&path, frame, seq);
     }
 }
 
@@ -891,9 +1128,9 @@ pub fn run() {
             sync_mark_note_synced
         ])
         .on_window_event(|window, event| match event {
-            WindowEvent::Moved(_) | WindowEvent::Resized(_) => save_window_frame(window),
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) => schedule_window_frame_save(window),
             WindowEvent::CloseRequested { api, .. } => {
-                save_window_frame(window);
+                flush_window_frame(window);
                 api.prevent_close();
                 let _ = window.hide();
             }
@@ -1115,6 +1352,46 @@ mod tests {
         assert!(results
             .iter()
             .all(|note| note.title.starts_with("Project Alpha")));
+    }
+
+    #[test]
+    fn list_notes_empty_query_returns_most_recent_with_first_line_titles() {
+        let notes_dir = temp_notes_dir("recent");
+        let root = Path::new(&notes_dir);
+        for index in 0..12 {
+            let path = root.join(format!("note-{index:02}.md"));
+            atomic_write(
+                &path,
+                format!("# Note Title {index}\n\nbody line 1\nbody line 2").as_bytes(),
+            )
+            .unwrap();
+        }
+        // Hidden dotfiles and non-markdown files must be ignored.
+        fs::write(root.join(".hidden.md"), "# Secret\n").unwrap();
+        fs::write(root.join("readme.txt"), "# Not markdown\n").unwrap();
+
+        let results = list_notes(notes_dir.clone(), String::new()).unwrap();
+        assert_eq!(results.len(), 10);
+        assert!(results.iter().all(|entry| entry.title.starts_with("Note Title ")));
+        assert!(results.iter().all(|entry| entry.path.ends_with(".md") && !entry.path.starts_with('.')));
+        let _ = fs::remove_dir_all(&notes_dir);
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file_without_leaving_temp_files() {
+        let notes_dir = temp_notes_dir("atomic");
+        let target = Path::new(&notes_dir).join("Sample.md");
+        atomic_write(&target, b"# First\n").unwrap();
+        atomic_write(&target, b"# Second\n").unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "# Second\n");
+        let leftover_temps = fs::read_dir(&notes_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftover_temps, 0);
+        let _ = fs::remove_dir_all(&notes_dir);
     }
 
     #[test]

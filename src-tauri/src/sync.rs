@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::OnceLock,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -9,12 +10,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{notes_root, relative_note_path, resolve_note_path, sanitize_filename, unique_note_path};
+use crate::{
+    atomic_write, notes_root, relative_note_path, resolve_note_path, sanitize_filename,
+    unique_note_path,
+};
 
 const SYNC_STATE_FILE: &str = ".nanotes-sync.json";
 const YJS_STATE_DIR: &str = ".nanotes-yjs";
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TrackedNote {
     path: String,
@@ -26,7 +30,7 @@ struct TrackedNote {
     deleted: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalSyncState {
     server_url: String,
@@ -189,12 +193,7 @@ pub fn write_yjs_state_hex(notes_dir: &str, note_id: &str, state_hex: &str) -> R
     let root = notes_root(notes_dir)?;
     let path = yjs_state_path(&root, note_id)?;
     let bytes = hex::decode(state_hex.trim()).map_err(|error| error.to_string())?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let tmp = path.with_extension("bin.tmp");
-    fs::write(&tmp, bytes).map_err(|error| error.to_string())?;
-    fs::rename(&tmp, &path).map_err(|error| error.to_string())
+    atomic_write(&path, &bytes)
 }
 
 pub fn mark_note_synced(
@@ -222,24 +221,27 @@ pub fn mark_note_synced(
     save_sync_state(&root, &state)
 }
 
-fn load_sync_state(root: &Path, server_url: &str) -> LocalSyncState {
+fn load_sync_state(root: &Path, server_url: &str) -> (LocalSyncState, bool) {
     let path = sync_state_path(root);
     let parsed = fs::read_to_string(&path)
         .ok()
         .and_then(|raw| serde_json::from_str::<LocalSyncState>(&raw).ok());
     match parsed {
-        Some(state) if state.server_url == server_url => state,
-        _ => LocalSyncState {
-            server_url: server_url.to_string(),
-            cursor: 0,
-            notes: HashMap::new(),
-        },
+        Some(state) if state.server_url == server_url => (state, true),
+        _ => (
+            LocalSyncState {
+                server_url: server_url.to_string(),
+                cursor: 0,
+                notes: HashMap::new(),
+            },
+            false,
+        ),
     }
 }
 
 fn save_sync_state(root: &Path, state: &LocalSyncState) -> Result<(), String> {
     let content = serde_json::to_string_pretty(state).map_err(|error| error.to_string())?;
-    fs::write(sync_state_path(root), content).map_err(|error| error.to_string())
+    atomic_write(&sync_state_path(root), content.as_bytes())
 }
 
 /// Keeps the tracked note ID attached to its file when `write_note` renames a note
@@ -267,7 +269,7 @@ pub fn track_local_rename(root: &Path, old_path: &str, new_path: &str) {
     }
 }
 
-fn http_client() -> Result<reqwest::Client, String> {
+fn build_http_client() -> Result<reqwest::Client, String> {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
     }
@@ -292,6 +294,14 @@ fn http_client() -> Result<reqwest::Client, String> {
     };
 
     builder.build().map_err(|error| error.to_string())
+}
+
+fn http_client() -> Result<&'static reqwest::Client, String> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    match CLIENT.get_or_init(build_http_client) {
+        Ok(client) => Ok(client),
+        Err(error) => Err(error.clone()),
+    }
 }
 
 fn default_device_name() -> String {
@@ -349,7 +359,7 @@ fn local_markdown_files(root: &Path) -> Result<HashMap<String, String>, String> 
 
 fn write_remote_file(root: &Path, path: &str, content: &str) -> Result<String, String> {
     let safe_path = resolve_note_path(&root.to_string_lossy(), path)?;
-    fs::write(&safe_path, content).map_err(|error| error.to_string())?;
+    atomic_write(&safe_path, content.as_bytes())?;
     relative_note_path(root, &safe_path)
 }
 
@@ -651,13 +661,14 @@ pub async fn sync_notes(
 
     let root = notes_root(notes_dir)?;
     let client = http_client()?;
-    let mut state = load_sync_state(&root, &base);
+    let (mut state, state_loaded) = load_sync_state(&root, &base);
+    let initial_state = state.clone();
     let mut pinned_set: HashSet<String> = pinned_paths.into_iter().collect();
     let mut active_path = active_note_path;
     let live_id_ref = live_note_id.as_deref();
 
     let (mut pulled, mut conflicts, mut active_changed) = pull_changes(
-        &client,
+        client,
         &base,
         token,
         &root,
@@ -795,7 +806,7 @@ pub async fn sync_notes(
 
         if had_conflict && attempt == 0 {
             let (p, c, ac) = pull_changes(
-                &client,
+                client,
                 &base,
                 token,
                 &root,
@@ -814,7 +825,9 @@ pub async fn sync_notes(
         }
     }
 
-    save_sync_state(&root, &state)?;
+    if !state_loaded || state != initial_state {
+        save_sync_state(&root, &state)?;
+    }
 
     let mut final_pinned: Vec<String> = pinned_set.into_iter().collect();
     final_pinned.sort();
@@ -873,10 +886,14 @@ mod tests {
 
         track_local_rename(&root, "Old Title.md", "New Title.md");
 
-        let reloaded = load_sync_state(&root, "https://notes.example.com");
+        let (reloaded, loaded) = load_sync_state(&root, "https://notes.example.com");
+        assert!(loaded);
         let tracked = reloaded.notes.get("id-1").unwrap();
         assert_eq!(tracked.path, "New Title.md");
         assert_eq!(tracked.synced_path, "Old Title.md");
+
+        let (_other, other_loaded) = load_sync_state(&root, "https://other.example.com");
+        assert!(!other_loaded);
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -931,7 +948,8 @@ mod tests {
             note_id_for_path(&dir, "Live Note.md").unwrap().as_deref(),
             Some("id-live")
         );
-        let reloaded = load_sync_state(&root, "https://notes.example.com");
+        let (reloaded, loaded) = load_sync_state(&root, "https://notes.example.com");
+        assert!(loaded);
         let entry = reloaded.notes.get("id-live").unwrap();
         assert_eq!(entry.rev, 4);
         assert_eq!(entry.content_hash, sha256_hex("# Live Note\n\nHi"));
