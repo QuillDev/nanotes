@@ -48,17 +48,17 @@ function error(status: number, message: string): Response {
   return json({ error: message }, { status });
 }
 
-export function createApp(options: AppOptions): {
+export async function createApp(options: AppOptions): Promise<{
   fetch: (req: Request, server?: Server<WsClientData>) => Promise<Response>;
   websocket: WebSocketHandler<WsClientData>;
-  close: () => void;
+  close: () => Promise<void>;
   notes: NotesStore;
   auth: Auth;
   passkeys: Passkeys | null;
   collab: CollabHub;
-} {
+}> {
   const clock = options.clock ?? Date.now;
-  const database = openDatabase(options.databasePath);
+  const database = await openDatabase(options.databasePath);
   const notes = new NotesStore(database);
   const auth = new Auth(database, {
     passwordHash: options.passwordHash,
@@ -84,13 +84,13 @@ export function createApp(options: AppOptions): {
     if (url.pathname === "/api/ws") {
       if (!server) return error(426, "websocket upgrade required");
       const now = clock();
-      const device = auth.deviceFromRequest(req, now);
+      const device = await auth.deviceFromRequest(req, now);
       let authed = false;
       let deviceName = "Web";
       if (device) {
         authed = true;
         deviceName = device.name;
-      } else if (auth.isSignedIn(req, now)) {
+      } else if (await auth.isSignedIn(req, now)) {
         if (!sameOrigin(req)) return error(403, "cross-origin websocket");
         authed = true;
         deviceName = "Web";
@@ -142,9 +142,9 @@ export function createApp(options: AppOptions): {
   return {
     fetch,
     websocket,
-    close: () => {
-      collab.close();
-      database.close();
+    close: async () => {
+      await notes.exclusive(() => collab.close());
+      await database.destroy();
     },
     notes,
     auth,

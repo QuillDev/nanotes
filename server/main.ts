@@ -11,7 +11,7 @@ function required(name: string): string {
 
 const env = (name: string): string | null => process.env[name] || null;
 
-const app = createApp({
+const app = await createApp({
   databasePath: required("NANOTES_DATABASE"),
   passwordHash: env("NANOTES_PASSWORD_HASH"),
   mcpToken: env("NANOTES_MCP_TOKEN"),
@@ -26,13 +26,13 @@ const server = Bun.serve({
   websocket: app.websocket,
 });
 
-function shutdown() {
+async function shutdown() {
   server.stop();
-  app.close();
+  await app.close();
   process.exit(0);
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
 
 console.log(`nanotes sync server listening on ${server.url}`);

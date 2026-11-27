@@ -9,12 +9,12 @@ if (!databasePath || !origin) {
   process.exit(1);
 }
 
-const database = openDatabase(databasePath);
+const database = await openDatabase(databasePath);
 try {
   const passkeys = new Passkeys(database, origin);
-  const { url, expiresAt } = passkeys.createSetupLink(Date.now());
+  const { url, expiresAt } = await passkeys.createSetupLink(Date.now());
   console.log(url);
   console.error(`expires: ${new Date(expiresAt).toISOString()}`);
 } finally {
-  database.close();
+  await database.destroy();
 }

@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { createApp } from "../server/app.ts";
 import { CollabClient } from "../src/collab.ts";
+import { type Engine, engines, releaseTestDatabases, testDatabase } from "./databases.ts";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -24,13 +25,13 @@ interface TestHarness {
   createNote: (path: string, content: string) => Promise<{ id: string }>;
   deleteNote: (id: string) => Promise<void>;
   getNoteContent: (id: string) => Promise<string>;
-  close: () => void;
+  close: () => Promise<void>;
 }
 
-async function startHarness(): Promise<TestHarness> {
+async function startHarness(engine: Engine): Promise<TestHarness> {
   const passwordHash = await Bun.password.hash("test-secret");
-  const app = createApp({
-    databasePath: ":memory:",
+  const app = await createApp({
+    databasePath: await testDatabase(engine),
     passwordHash,
     mcpToken: "mcp-secret",
     secureCookies: false,
@@ -91,9 +92,9 @@ async function startHarness(): Promise<TestHarness> {
       const data = (await res.json()) as { content: string };
       return data.content;
     },
-    close() {
+    async close() {
       server.stop(true);
-      app.close();
+      await app.close();
     },
   };
 }
@@ -104,9 +105,11 @@ function forceDropSocket(client: CollabClient): void {
   ws.close(4000, "simulated network drop");
 }
 
-describe("collab client reconnect and presence", () => {
+afterAll(releaseTestDatabases);
+
+describe.each(engines())("collab client reconnect and presence on %s", (engine) => {
   test("reconnecting peer restores its cursor presence to other peers without moving", async () => {
-    const harness = await startHarness();
+    const harness = await startHarness(engine);
     const clients: CollabClient[] = [];
     try {
       const [tokenA, tokenB] = await Promise.all([
@@ -147,12 +150,12 @@ describe("collab client reconnect and presence", () => {
       expect(restoredUser?.name).toBe("Laptop A");
     } finally {
       for (const c of clients) c.close();
-      harness.close();
+      await harness.close();
     }
   });
 
   test("disconnecting clears remote cursors and reconnecting restores only peers still in the room", async () => {
-    const harness = await startHarness();
+    const harness = await startHarness(engine);
     const clients: CollabClient[] = [];
     try {
       const [tokenA, tokenB, tokenC] = await Promise.all([
@@ -200,12 +203,12 @@ describe("collab client reconnect and presence", () => {
       expect(sessA.awareness.getStates().has(sessB.doc.clientID)).toBe(false);
     } finally {
       for (const c of clients) c.close();
-      harness.close();
+      await harness.close();
     }
   });
 
   test("offline local edits and concurrent remote edits converge after reconnect", async () => {
-    const harness = await startHarness();
+    const harness = await startHarness(engine);
     const clients: CollabClient[] = [];
     try {
       const [tokenA, tokenB] = await Promise.all([
@@ -247,12 +250,12 @@ describe("collab client reconnect and presence", () => {
       expect(await harness.getNoteContent(note.id)).toBe("A: start\nend :B");
     } finally {
       for (const c of clients) c.close();
-      harness.close();
+      await harness.close();
     }
   });
 
   test("reconnecting to a note deleted while offline notifies the session without surfacing an error", async () => {
-    const harness = await startHarness();
+    const harness = await startHarness(engine);
     const clients: CollabClient[] = [];
     try {
       const tokenA = await harness.createDeviceToken("Peer A");
@@ -285,7 +288,7 @@ describe("collab client reconnect and presence", () => {
       expect(errors).toEqual([]);
     } finally {
       for (const c of clients) c.close();
-      harness.close();
+      await harness.close();
     }
   });
 });

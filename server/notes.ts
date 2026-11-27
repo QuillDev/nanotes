@@ -1,6 +1,8 @@
-import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { readSetting, writeSetting } from "./database.ts";
+import { sql } from "kysely";
+import { z } from "zod";
+import { type Db, isPostgres, queryOne, queryRows, readSetting, writeSetting } from "./database.ts";
+import { NoteRowSchema } from "./schemas.ts";
 
 export interface SyncedNote {
   readonly id: string;
@@ -38,35 +40,24 @@ export type SyncPushResult =
   | { readonly id: string; readonly status: "ok"; readonly note: SyncedNote }
   | { readonly id: string; readonly status: "conflict"; readonly serverNote: SyncedNote };
 
-interface NoteRow {
-  id: string;
-  path: string;
-  title: string;
-  content: string;
-  content_hash: string;
-  pinned: number;
-  rev: number;
-  deleted_at: number | null;
-  created_at: number;
-  updated_at: number;
-}
+const NoteSchema = NoteRowSchema.omit({ yjs_state: true });
+type NoteRow = z.infer<typeof NoteSchema>;
+const NoteSummarySchema = NoteRowSchema.pick({ id: true, path: true, title: true, pinned: true, rev: true, updated_at: true }).extend({
+  size: z.number(),
+});
+type NoteSummaryRow = z.infer<typeof NoteSummarySchema>;
+const NoteSummaryContentSchema = NoteSummarySchema.extend({ content: z.string() });
+const YjsStateSchema = NoteRowSchema.pick({ yjs_state: true });
+const CollabBaseSchema = NoteRowSchema.pick({ path: true, pinned: true, created_at: true });
+const NoteIdSchema = NoteRowSchema.pick({ id: true });
 
-interface NoteSummaryRow {
-  id: string;
-  path: string;
-  title: string;
-  pinned: number;
-  rev: number;
-  updated_at: number;
-  size: number;
-}
+const NOTE_COLUMNS = sql.raw("id, path, title, content, content_hash, pinned, rev, deleted_at, created_at, updated_at");
 
-interface NoteSummaryContentRow extends NoteSummaryRow {
-  content: string;
+/** Summary columns; `size` is the note's UTF-8 byte length. */
+function summaryColumns(db: Db) {
+  const size = isPostgres(db) ? sql`octet_length(content)` : sql`length(CAST(content AS BLOB))`;
+  return sql`id, path, title, pinned, rev, updated_at, ${size} AS size`;
 }
-
-const NOTE_COLUMNS = "id, path, title, content, content_hash, pinned, rev, deleted_at, created_at, updated_at";
-const SUMMARY_COLUMNS = "id, path, title, pinned, rev, updated_at, length(CAST(content AS BLOB)) AS size";
 
 function rowToNote(row: NoteRow): SyncedNote {
   return {
@@ -133,74 +124,88 @@ export function normalizeNotePath(rawPath: string | undefined, content: string):
 }
 
 export interface NotesHooks {
-  beforeRead?: (noteId?: string) => void;
-  onExternalContent?: (note: SyncedNote) => void;
+  beforeRead?: (noteId?: string) => Promise<void>;
+  onExternalContent?: (note: SyncedNote) => Promise<void>;
   onNoteChanged?: (note: SyncedNote) => void;
 }
 
+/**
+ * Notes and their sync revision. Public reads and writes take turns through `exclusive`, so
+ * the live collab rooms (whose hooks run inside them) never see a half-finished change. The
+ * collab hub runs its own work through `exclusive` too and calls only the methods marked
+ * "inside exclusive".
+ */
 export class NotesStore {
   private hooks: NotesHooks | null = null;
+  private queue: Promise<unknown> = Promise.resolve();
 
-  constructor(private readonly database: Database) {}
+  constructor(private readonly database: Db) {}
 
   setHooks(hooks: NotesHooks): void {
     this.hooks = hooks;
   }
 
-  currentRev(): number {
-    this.hooks?.beforeRead?.();
-    return Number(readSetting(this.database, "sync_rev") ?? "0");
+  /** Runs `task` once every earlier task has finished. */
+  exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(task);
+    this.queue = run.catch(() => undefined);
+    return run;
   }
 
-  private rawRev(): number {
-    return Number(readSetting(this.database, "sync_rev") ?? "0");
+  currentRev(): Promise<number> {
+    return this.exclusive(async () => {
+      await this.hooks?.beforeRead?.();
+      return this.revision();
+    });
   }
 
-  private nextRev(): number {
-    const next = this.rawRev() + 1;
-    writeSetting(this.database, "sync_rev", String(next));
+  /** The sync revision without flushing collab rooms (inside exclusive). */
+  async revision(database: Db = this.database): Promise<number> {
+    return Number((await readSetting(database, "sync_rev")) ?? "0");
+  }
+
+  private async nextRev(database: Db): Promise<number> {
+    const next = (await this.revision(database)) + 1;
+    await writeSetting(database, "sync_rev", String(next));
     return next;
   }
 
-  getRaw(id: string): SyncedNote | null {
-    const row = this.database
-      .query<NoteRow, [string]>(`SELECT ${NOTE_COLUMNS} FROM notes WHERE id = ?`)
-      .get(id);
+  /** Inside exclusive. */
+  async getRaw(id: string): Promise<SyncedNote | null> {
+    const row = await queryOne(this.database, sql`SELECT ${NOTE_COLUMNS} FROM notes WHERE id = ${id}`, NoteSchema);
     return row ? rowToNote(row) : null;
   }
 
-  getYjsState(id: string): Uint8Array | null {
-    const row = this.database
-      .query<{ yjs_state: Uint8Array | null }, [string]>("SELECT yjs_state FROM notes WHERE id = ?")
-      .get(id);
-    if (!row || !row.yjs_state) return null;
-    return row.yjs_state instanceof Uint8Array ? row.yjs_state : new Uint8Array(row.yjs_state);
+  /** Inside exclusive. */
+  async getYjsState(id: string): Promise<Uint8Array | null> {
+    const row = await queryOne(this.database, sql`SELECT yjs_state FROM notes WHERE id = ${id}`, YjsStateSchema);
+    return row?.yjs_state ?? null;
   }
 
-  saveYjsState(id: string, state: Uint8Array): void {
-    this.database.query("UPDATE notes SET yjs_state = ? WHERE id = ?").run(state, id);
+  /** Inside exclusive. */
+  async saveYjsState(id: string, state: Uint8Array): Promise<void> {
+    await this.database.updateTable("notes").set({ yjs_state: state }).where("id", "=", id).execute();
   }
 
-  saveFromCollab(id: string, yjsState: Uint8Array, content: string, now: number): SyncedNote | null {
-    return this.database.transaction(() => {
-      const existing = this.database
-        .query<{ path: string; pinned: number; created_at: number }, [string]>(
-          "SELECT path, pinned, created_at FROM notes WHERE id = ? AND deleted_at IS NULL",
-        )
-        .get(id);
+  /** Inside exclusive. */
+  saveFromCollab(id: string, yjsState: Uint8Array, content: string, now: number): Promise<SyncedNote | null> {
+    return this.database.transaction().execute(async (trx) => {
+      const existing = await queryOne(
+        trx,
+        sql`SELECT path, pinned, created_at FROM notes WHERE id = ${id} AND deleted_at IS NULL`,
+        CollabBaseSchema,
+      );
       if (!existing) return null;
       const title = titleFromContent(content);
       const desiredPath = normalizeNotePath(undefined, content);
-      const path = desiredPath === existing.path ? existing.path : this.uniqueActivePath(desiredPath, id);
+      const path = desiredPath === existing.path ? existing.path : await this.uniqueActivePath(trx, desiredPath, id);
       const hash = sha256Hex(content);
-      const rev = this.nextRev();
-      this.database
-        .query(
-          `UPDATE notes
-           SET path = ?, title = ?, content = ?, content_hash = ?, yjs_state = ?, rev = ?, updated_at = ?
-           WHERE id = ?`,
-        )
-        .run(path, title, content, hash, yjsState, rev, now, id);
+      const rev = await this.nextRev(trx);
+      await trx
+        .updateTable("notes")
+        .set({ path, title, content, content_hash: hash, yjs_state: yjsState, rev, updated_at: now })
+        .where("id", "=", id)
+        .execute();
       return {
         id,
         path,
@@ -213,58 +218,65 @@ export class NotesStore {
         createdAt: existing.created_at,
         updatedAt: now,
       };
-    })();
+    });
   }
 
-  private uniqueActivePath(desiredPath: string, excludeId: string | null): string {
+  private async uniqueActivePath(database: Db, desiredPath: string, excludeId: string | null): Promise<string> {
     const stem = desiredPath.toLowerCase().endsWith(".md") ? desiredPath.slice(0, -3) : desiredPath;
     for (let index = 0; ; index += 1) {
       const candidate = index === 0 ? `${stem}.md` : `${stem} ${index}.md`;
-      const existing = this.database
-        .query<{ id: string }, [string]>("SELECT id FROM notes WHERE path = ? AND deleted_at IS NULL")
-        .get(candidate);
+      // Each candidate is only tried when the one before it is taken.
+      // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop
+      const existing = await queryOne(
+        database,
+        sql`SELECT id FROM notes WHERE path = ${candidate} AND deleted_at IS NULL`,
+        NoteIdSchema,
+      );
       if (!existing || existing.id === excludeId) return candidate;
     }
   }
 
-  private queryList(query?: string, limit = 200): NoteSummary[] {
+  private async queryList(query?: string, limit = 200): Promise<NoteSummary[]> {
+    const db = this.database;
     const needle = (query ?? "").trim().toLowerCase();
     if (!needle) {
-      return this.database
-        .query<NoteSummaryRow, [number]>(
-          `SELECT ${SUMMARY_COLUMNS}
+      const rows = await queryRows(
+        db,
+        sql`SELECT ${summaryColumns(db)}
            FROM notes
            WHERE deleted_at IS NULL
            ORDER BY pinned DESC, updated_at DESC
-           LIMIT ?`,
-        )
-        .all(limit)
-        .map(rowToSummary);
+           LIMIT ${limit}`,
+        NoteSummarySchema,
+      );
+      return rows.map(rowToSummary);
     }
 
-    // ASCII needles match identically under SQLite's lower(), keeping full note bodies out of JS memory.
+    // ASCII needles match identically under the database's lower(), keeping full note bodies out of JS memory.
     if (!/[^\x00-\x7f]/.test(needle)) {
-      return this.database
-        .query<NoteSummaryRow, [string, number]>(
-          `SELECT ${SUMMARY_COLUMNS}
+      const haystack = sql`lower(title || ' ' || path || ' ' || content)`;
+      const position = isPostgres(db) ? sql`strpos(${haystack}, ${needle})` : sql`instr(${haystack}, ${needle})`;
+      const rows = await queryRows(
+        db,
+        sql`SELECT ${summaryColumns(db)}
            FROM notes
            WHERE deleted_at IS NULL
-             AND instr(lower(title || ' ' || path || ' ' || content), ?) > 0
+             AND ${position} > 0
            ORDER BY pinned DESC, updated_at DESC
-           LIMIT ?`,
-        )
-        .all(needle, limit)
-        .map(rowToSummary);
+           LIMIT ${limit}`,
+        NoteSummarySchema,
+      );
+      return rows.map(rowToSummary);
     }
 
-    const rows = this.database
-      .query<NoteSummaryContentRow, []>(
-        `SELECT ${SUMMARY_COLUMNS}, content
+    const rows = await queryRows(
+      db,
+      sql`SELECT ${summaryColumns(db)}, content
          FROM notes
          WHERE deleted_at IS NULL
          ORDER BY pinned DESC, updated_at DESC`,
-      )
-      .all();
+      NoteSummaryContentSchema,
+    );
     const matched: NoteSummary[] = [];
     for (const row of rows) {
       if (`${row.title} ${row.path} ${row.content}`.toLowerCase().includes(needle)) {
@@ -275,85 +287,109 @@ export class NotesStore {
     return matched;
   }
 
-  list(query?: string, limit = 200): NoteSummary[] {
-    this.hooks?.beforeRead?.();
-    return this.queryList(query, limit);
+  list(query?: string, limit = 200): Promise<NoteSummary[]> {
+    return this.exclusive(async () => {
+      await this.hooks?.beforeRead?.();
+      return this.queryList(query, limit);
+    });
   }
 
-  listWithRev(query?: string, limit = 200): { rev: number; notes: NoteSummary[] } {
-    this.hooks?.beforeRead?.();
-    return {
-      rev: this.rawRev(),
-      notes: this.queryList(query, limit),
-    };
+  listWithRev(query?: string, limit = 200): Promise<{ rev: number; notes: NoteSummary[] }> {
+    return this.exclusive(async () => {
+      await this.hooks?.beforeRead?.();
+      const [rev, notes] = await Promise.all([this.revision(), this.queryList(query, limit)]);
+      return { rev, notes };
+    });
   }
 
-  get(idOrPath: string): SyncedNote | null {
-    this.hooks?.beforeRead?.(idOrPath);
-    const byId = this.database
-      .query<NoteRow, [string]>(`SELECT ${NOTE_COLUMNS} FROM notes WHERE id = ? AND deleted_at IS NULL`)
-      .get(idOrPath);
-    if (byId) return rowToNote(byId);
-    const byPath = this.database
-      .query<NoteRow, [string]>(`SELECT ${NOTE_COLUMNS} FROM notes WHERE path = ? AND deleted_at IS NULL`)
-      .get(idOrPath);
-    return byPath ? rowToNote(byPath) : null;
+  private async findActive(database: Db, idOrPath: string): Promise<NoteRow | null> {
+    return (
+      (await queryOne(database, sql`SELECT ${NOTE_COLUMNS} FROM notes WHERE id = ${idOrPath} AND deleted_at IS NULL`, NoteSchema)) ??
+      (await queryOne(database, sql`SELECT ${NOTE_COLUMNS} FROM notes WHERE path = ${idOrPath} AND deleted_at IS NULL`, NoteSchema))
+    );
   }
 
-  changesSince(sinceRev: number): { rev: number; changes: SyncedNote[] } {
-    this.hooks?.beforeRead?.();
-    const rev = this.rawRev();
-    const rows = this.database
-      .query<NoteRow, [number]>(`SELECT ${NOTE_COLUMNS} FROM notes WHERE rev > ? ORDER BY rev ASC`)
-      .all(sinceRev);
-    return { rev, changes: rows.map(rowToNote) };
+  private async getActive(idOrPath: string): Promise<SyncedNote | null> {
+    await this.hooks?.beforeRead?.(idOrPath);
+    const row = await this.findActive(this.database, idOrPath);
+    return row ? rowToNote(row) : null;
   }
 
-  create(input: { content: string; path?: string; pinned?: boolean }, now: number): SyncedNote {
-    const created = this.database.transaction((): SyncedNote => {
-      const id = randomUUID();
-      const desired = normalizeNotePath(input.path, input.content);
-      const path = this.uniqueActivePath(desired, id);
-      const title = titleFromContent(input.content);
-      const hash = sha256Hex(input.content);
-      const rev = this.nextRev();
-      const pinned = Boolean(input.pinned);
-      this.database
-        .query(
-          `INSERT INTO notes (id, path, title, content, content_hash, pinned, rev, deleted_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-        )
-        .run(id, path, title, input.content, hash, pinned ? 1 : 0, rev, now, now);
-      return {
-        id,
-        path,
-        title,
-        content: input.content,
-        contentHash: hash,
-        pinned,
-        rev,
-        deletedAt: null,
-        createdAt: now,
-        updatedAt: now,
-      };
-    })();
-    this.hooks?.onExternalContent?.(created);
-    return created;
+  get(idOrPath: string): Promise<SyncedNote | null> {
+    return this.exclusive(() => this.getActive(idOrPath));
+  }
+
+  changesSince(sinceRev: number): Promise<{ rev: number; changes: SyncedNote[] }> {
+    return this.exclusive(async () => {
+      await this.hooks?.beforeRead?.();
+      const [rev, rows] = await Promise.all([
+        this.revision(),
+        queryRows(this.database, sql`SELECT ${NOTE_COLUMNS} FROM notes WHERE rev > ${sinceRev} ORDER BY rev ASC`, NoteSchema),
+      ]);
+      return { rev, changes: rows.map(rowToNote) };
+    });
+  }
+
+  create(input: { content: string; path?: string; pinned?: boolean }, now: number): Promise<SyncedNote> {
+    return this.exclusive(async () => {
+      const created = await this.database.transaction().execute(async (trx): Promise<SyncedNote> => {
+        const id = randomUUID();
+        const desired = normalizeNotePath(input.path, input.content);
+        const path = await this.uniqueActivePath(trx, desired, id);
+        const title = titleFromContent(input.content);
+        const hash = sha256Hex(input.content);
+        const rev = await this.nextRev(trx);
+        const pinned = Boolean(input.pinned);
+        await trx
+          .insertInto("notes")
+          .values({
+            id,
+            path,
+            title,
+            content: input.content,
+            content_hash: hash,
+            pinned: pinned ? 1 : 0,
+            rev,
+            deleted_at: null,
+            created_at: now,
+            updated_at: now,
+            yjs_state: null,
+          })
+          .execute();
+        return {
+          id,
+          path,
+          title,
+          content: input.content,
+          contentHash: hash,
+          pinned,
+          rev,
+          deletedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+      });
+      await this.hooks?.onExternalContent?.(created);
+      return created;
+    });
   }
 
   update(
     idOrPath: string,
     changes: { content?: string; pinned?: boolean; path?: string },
     now: number,
-  ): SyncedNote | null {
-    this.hooks?.beforeRead?.(idOrPath);
-    const updated = this.database.transaction((): SyncedNote | null => {
-      const current = this.database
-        .query<NoteRow, [string]>(`SELECT ${NOTE_COLUMNS} FROM notes WHERE id = ? AND deleted_at IS NULL`)
-        .get(idOrPath)
-        ?? this.database
-          .query<NoteRow, [string]>(`SELECT ${NOTE_COLUMNS} FROM notes WHERE path = ? AND deleted_at IS NULL`)
-          .get(idOrPath);
+  ): Promise<SyncedNote | null> {
+    return this.exclusive(() => this.updateActive(idOrPath, changes, now));
+  }
+
+  private async updateActive(
+    idOrPath: string,
+    changes: { content?: string; pinned?: boolean; path?: string },
+    now: number,
+  ): Promise<SyncedNote | null> {
+    await this.hooks?.beforeRead?.(idOrPath);
+    const updated = await this.database.transaction().execute(async (trx): Promise<SyncedNote | null> => {
+      const current = await this.findActive(trx, idOrPath);
       if (!current) return null;
       const content = changes.content ?? current.content;
       const title = titleFromContent(content);
@@ -363,17 +399,15 @@ export class NotesStore {
           : changes.content !== undefined
             ? normalizeNotePath(undefined, content)
             : current.path;
-      const path = desiredPath === current.path ? current.path : this.uniqueActivePath(desiredPath, current.id);
+      const path = desiredPath === current.path ? current.path : await this.uniqueActivePath(trx, desiredPath, current.id);
       const pinned = changes.pinned !== undefined ? changes.pinned : current.pinned !== 0;
       const hash = changes.content !== undefined ? sha256Hex(content) : current.content_hash;
-      const rev = this.nextRev();
-      this.database
-        .query(
-          `UPDATE notes
-           SET path = ?, title = ?, content = ?, content_hash = ?, pinned = ?, rev = ?, updated_at = ?
-           WHERE id = ?`,
-        )
-        .run(path, title, content, hash, pinned ? 1 : 0, rev, now, current.id);
+      const rev = await this.nextRev(trx);
+      await trx
+        .updateTable("notes")
+        .set({ path, title, content, content_hash: hash, pinned: pinned ? 1 : 0, rev, updated_at: now })
+        .where("id", "=", current.id)
+        .execute();
       return {
         id: current.id,
         path,
@@ -386,10 +420,10 @@ export class NotesStore {
         createdAt: current.created_at,
         updatedAt: now,
       };
-    })();
+    });
     if (updated) {
       if (changes.content !== undefined) {
-        this.hooks?.onExternalContent?.(updated);
+        await this.hooks?.onExternalContent?.(updated);
       } else {
         this.hooks?.onNoteChanged?.(updated);
       }
@@ -397,171 +431,125 @@ export class NotesStore {
     return updated;
   }
 
-  append(idOrPath: string, text: string, now: number): SyncedNote | null {
-    const current = this.get(idOrPath);
-    if (!current) return null;
-    const separator = current.content.length === 0 || current.content.endsWith("\n") ? "" : "\n";
-    return this.update(current.id, { content: `${current.content}${separator}${text}` }, now);
-  }
-
-  remove(idOrPath: string, now: number): SyncedNote | null {
-    this.hooks?.beforeRead?.(idOrPath);
-    const removed = this.database.transaction((): SyncedNote | null => {
-      const current = this.database
-        .query<NoteRow, [string]>(`SELECT ${NOTE_COLUMNS} FROM notes WHERE id = ? AND deleted_at IS NULL`)
-        .get(idOrPath)
-        ?? this.database
-          .query<NoteRow, [string]>(`SELECT ${NOTE_COLUMNS} FROM notes WHERE path = ? AND deleted_at IS NULL`)
-          .get(idOrPath);
+  append(idOrPath: string, text: string, now: number): Promise<SyncedNote | null> {
+    return this.exclusive(async () => {
+      const current = await this.getActive(idOrPath);
       if (!current) return null;
-      const rev = this.nextRev();
-      const emptyHash = sha256Hex("");
-      this.database
-        .query(
-          `UPDATE notes
-           SET content = '', content_hash = ?, yjs_state = NULL, pinned = 0, deleted_at = ?, rev = ?, updated_at = ?
-           WHERE id = ?`,
-        )
-        .run(emptyHash, now, rev, now, current.id);
-      return {
-        id: current.id,
-        path: current.path,
-        title: current.title,
-        content: "",
-        contentHash: emptyHash,
-        pinned: false,
-        rev,
-        deletedAt: now,
-        createdAt: current.created_at,
-        updatedAt: now,
-      };
-    })();
-    if (removed) {
-      this.hooks?.onExternalContent?.(removed);
-    }
-    return removed;
+      const separator = current.content.length === 0 || current.content.endsWith("\n") ? "" : "\n";
+      return this.updateActive(current.id, { content: `${current.content}${separator}${text}` }, now);
+    });
   }
 
-  push(ops: readonly SyncPushOp[], now: number): { rev: number; results: SyncPushResult[] } {
-    this.hooks?.beforeRead?.();
-    const contentChanged: SyncedNote[] = [];
-    const metaChanged: SyncedNote[] = [];
-    const output = this.database.transaction(() => {
-      const results: SyncPushResult[] = [];
-      for (const op of ops) {
-        const id = op.id.trim() || randomUUID();
-        const existing = this.database
-          .query<NoteRow, [string]>(`SELECT ${NOTE_COLUMNS} FROM notes WHERE id = ?`)
-          .get(id);
+  remove(idOrPath: string, now: number): Promise<SyncedNote | null> {
+    return this.exclusive(async () => {
+      await this.hooks?.beforeRead?.(idOrPath);
+      const removed = await this.database.transaction().execute(async (trx): Promise<SyncedNote | null> => {
+        const current = await this.findActive(trx, idOrPath);
+        if (!current) return null;
+        const rev = await this.nextRev(trx);
+        const emptyHash = sha256Hex("");
+        await trx
+          .updateTable("notes")
+          .set({ content: "", content_hash: emptyHash, yjs_state: null, pinned: 0, deleted_at: now, rev, updated_at: now })
+          .where("id", "=", current.id)
+          .execute();
+        return {
+          id: current.id,
+          path: current.path,
+          title: current.title,
+          content: "",
+          contentHash: emptyHash,
+          pinned: false,
+          rev,
+          deletedAt: now,
+          createdAt: current.created_at,
+          updatedAt: now,
+        };
+      });
+      if (removed) {
+        await this.hooks?.onExternalContent?.(removed);
+      }
+      return removed;
+    });
+  }
 
-        if (existing) {
-          if (existing.rev !== op.baseRev) {
-            results.push({ id, status: "conflict", serverNote: rowToNote(existing) });
-            continue;
-          }
-          const rev = this.nextRev();
-          let updated: SyncedNote;
-          if (op.deleted) {
-            const emptyHash = sha256Hex("");
-            this.database
-              .query(
-                `UPDATE notes
-                 SET content = '', content_hash = ?, yjs_state = NULL, pinned = 0, deleted_at = ?, rev = ?, updated_at = ?
-                 WHERE id = ?`,
-              )
-              .run(emptyHash, now, rev, now, id);
-            updated = {
-              id,
-              path: existing.path,
-              title: existing.title,
-              content: "",
-              contentHash: emptyHash,
-              pinned: false,
-              rev,
-              deletedAt: now,
-              createdAt: existing.created_at,
-              updatedAt: now,
-            };
-          } else {
-            const content = op.content ?? existing.content;
-            const desiredPath = normalizeNotePath(op.path ?? existing.path, content);
-            const path =
-              existing.deleted_at === null && desiredPath === existing.path
-                ? existing.path
-                : this.uniqueActivePath(desiredPath, id);
-            const title = titleFromContent(content);
-            const hash = op.content !== undefined ? sha256Hex(content) : existing.content_hash;
-            const pinned = op.pinned !== undefined ? op.pinned : existing.pinned !== 0;
-            this.database
-              .query(
-                `UPDATE notes
-                 SET path = ?, title = ?, content = ?, content_hash = ?, pinned = ?, deleted_at = NULL, rev = ?, updated_at = ?
-                 WHERE id = ?`,
-              )
-              .run(path, title, content, hash, pinned ? 1 : 0, rev, now, id);
-            updated = {
-              id,
-              path,
-              title,
-              content,
-              contentHash: hash,
-              pinned,
-              rev,
-              deletedAt: null,
-              createdAt: existing.created_at,
-              updatedAt: now,
-            };
-          }
-          if (op.deleted || op.content !== undefined) {
-            contentChanged.push(updated);
-          } else {
-            metaChanged.push(updated);
-          }
-          results.push({ id, status: "ok", note: updated });
-          continue;
+  push(ops: readonly SyncPushOp[], now: number): Promise<{ rev: number; results: SyncPushResult[] }> {
+    return this.exclusive(async () => {
+      await this.hooks?.beforeRead?.();
+      const contentChanged: SyncedNote[] = [];
+      const metaChanged: SyncedNote[] = [];
+      const output = await this.database.transaction().execute(async (trx) => {
+        const results: SyncPushResult[] = [];
+        for (const op of ops) {
+          // Ops apply in order: each one sees the revisions and paths the ones before it wrote.
+          // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop
+          const result = await this.applyPushOp(trx, op, now);
+          results.push(result.result);
+          if (result.changed === "content") contentChanged.push(result.note);
+          if (result.changed === "meta") metaChanged.push(result.note);
         }
+        return { rev: await this.revision(trx), results };
+      });
 
-        if (op.deleted) {
-          const rev = this.nextRev();
-          const path = normalizeNotePath(op.path, "");
-          const emptyHash = sha256Hex("");
-          this.database
-            .query(
-              `INSERT INTO notes (id, path, title, content, content_hash, pinned, rev, deleted_at, created_at, updated_at)
-               VALUES (?, ?, 'Untitled', '', ?, 0, ?, ?, ?, ?)`,
-            )
-            .run(id, path, emptyHash, rev, now, now, now);
-          const created: SyncedNote = {
-            id,
-            path,
-            title: "Untitled",
-            content: "",
-            contentHash: emptyHash,
-            pinned: false,
-            rev,
-            deletedAt: now,
-            createdAt: now,
-            updatedAt: now,
-          };
-          contentChanged.push(created);
-          results.push({ id, status: "ok", note: created });
-          continue;
-        }
+      for (const note of contentChanged) {
+        // Collab rooms take each note's new content in the order the ops wrote it.
+        // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop
+        await this.hooks?.onExternalContent?.(note);
+      }
+      for (const note of metaChanged) this.hooks?.onNoteChanged?.(note);
+      return output;
+    });
+  }
 
-        const content = op.content ?? "";
-        const desiredPath = normalizeNotePath(op.path, content);
-        const path = this.uniqueActivePath(desiredPath, id);
+  private async applyPushOp(
+    trx: Db,
+    op: SyncPushOp,
+    now: number,
+  ): Promise<{ result: SyncPushResult; note: SyncedNote; changed: "content" | "meta" } | { result: SyncPushResult; changed: null }> {
+    const id = op.id.trim() || randomUUID();
+    const existing = await queryOne(trx, sql`SELECT ${NOTE_COLUMNS} FROM notes WHERE id = ${id}`, NoteSchema);
+
+    if (existing) {
+      if (existing.rev !== op.baseRev) {
+        return { result: { id, status: "conflict", serverNote: rowToNote(existing) }, changed: null };
+      }
+      const rev = await this.nextRev(trx);
+      let updated: SyncedNote;
+      if (op.deleted) {
+        const emptyHash = sha256Hex("");
+        await trx
+          .updateTable("notes")
+          .set({ content: "", content_hash: emptyHash, yjs_state: null, pinned: 0, deleted_at: now, rev, updated_at: now })
+          .where("id", "=", id)
+          .execute();
+        updated = {
+          id,
+          path: existing.path,
+          title: existing.title,
+          content: "",
+          contentHash: emptyHash,
+          pinned: false,
+          rev,
+          deletedAt: now,
+          createdAt: existing.created_at,
+          updatedAt: now,
+        };
+      } else {
+        const content = op.content ?? existing.content;
+        const desiredPath = normalizeNotePath(op.path ?? existing.path, content);
+        const path =
+          existing.deleted_at === null && desiredPath === existing.path
+            ? existing.path
+            : await this.uniqueActivePath(trx, desiredPath, id);
         const title = titleFromContent(content);
-        const hash = sha256Hex(content);
-        const pinned = Boolean(op.pinned);
-        const rev = this.nextRev();
-        this.database
-          .query(
-            `INSERT INTO notes (id, path, title, content, content_hash, pinned, rev, deleted_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-          )
-          .run(id, path, title, content, hash, pinned ? 1 : 0, rev, now, now);
-        const created: SyncedNote = {
+        const hash = op.content !== undefined ? sha256Hex(content) : existing.content_hash;
+        const pinned = op.pinned !== undefined ? op.pinned : existing.pinned !== 0;
+        await trx
+          .updateTable("notes")
+          .set({ path, title, content, content_hash: hash, pinned: pinned ? 1 : 0, deleted_at: null, rev, updated_at: now })
+          .where("id", "=", id)
+          .execute();
+        updated = {
           id,
           path,
           title,
@@ -570,17 +558,84 @@ export class NotesStore {
           pinned,
           rev,
           deletedAt: null,
-          createdAt: now,
+          createdAt: existing.created_at,
           updatedAt: now,
         };
-        contentChanged.push(created);
-        results.push({ id, status: "ok", note: created });
       }
-      return { rev: this.rawRev(), results };
-    })();
+      const changed = op.deleted || op.content !== undefined ? "content" : "meta";
+      return { result: { id, status: "ok", note: updated }, note: updated, changed };
+    }
 
-    for (const note of contentChanged) this.hooks?.onExternalContent?.(note);
-    for (const note of metaChanged) this.hooks?.onNoteChanged?.(note);
-    return output;
+    if (op.deleted) {
+      const rev = await this.nextRev(trx);
+      const path = normalizeNotePath(op.path, "");
+      const emptyHash = sha256Hex("");
+      await trx
+        .insertInto("notes")
+        .values({
+          id,
+          path,
+          title: "Untitled",
+          content: "",
+          content_hash: emptyHash,
+          pinned: 0,
+          rev,
+          deleted_at: now,
+          created_at: now,
+          updated_at: now,
+          yjs_state: null,
+        })
+        .execute();
+      const created: SyncedNote = {
+        id,
+        path,
+        title: "Untitled",
+        content: "",
+        contentHash: emptyHash,
+        pinned: false,
+        rev,
+        deletedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return { result: { id, status: "ok", note: created }, note: created, changed: "content" };
+    }
+
+    const content = op.content ?? "";
+    const desiredPath = normalizeNotePath(op.path, content);
+    const path = await this.uniqueActivePath(trx, desiredPath, id);
+    const title = titleFromContent(content);
+    const hash = sha256Hex(content);
+    const pinned = Boolean(op.pinned);
+    const rev = await this.nextRev(trx);
+    await trx
+      .insertInto("notes")
+      .values({
+        id,
+        path,
+        title,
+        content,
+        content_hash: hash,
+        pinned: pinned ? 1 : 0,
+        rev,
+        deleted_at: null,
+        created_at: now,
+        updated_at: now,
+        yjs_state: null,
+      })
+      .execute();
+    const created: SyncedNote = {
+      id,
+      path,
+      title,
+      content,
+      contentHash: hash,
+      pinned,
+      rev,
+      deletedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    return { result: { id, status: "ok", note: created }, note: created, changed: "content" };
   }
 }

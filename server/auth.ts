@@ -1,5 +1,9 @@
-import type { Database } from "bun:sqlite";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { sql } from "kysely";
+import type { z } from "zod";
+import type { Db } from "./database.ts";
+import { queryOne, queryRows } from "./database.ts";
+import { DevicePairingRowSchema, DeviceTokenRowSchema, SessionRowSchema } from "./schemas.ts";
 
 const SESSION_COOKIE = "nanotes_session";
 const SESSION_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000;
@@ -72,12 +76,23 @@ function pairingCode(): string {
   return out;
 }
 
+const SessionExpirySchema = SessionRowSchema.pick({ expires_at: true });
+const DeviceRowSchema = DeviceTokenRowSchema.pick({ id: true, name: true, created_at: true, last_used_at: true });
+const PairingRowSchema = DevicePairingRowSchema.pick({ code: true, device_name: true, approved_token: true, expires_at: true });
+
+function toDeviceInfo(row: z.infer<typeof DeviceRowSchema>): DeviceInfo {
+  return { id: row.id, name: row.name, createdAt: row.created_at, lastUsedAt: row.last_used_at };
+}
+
+/** A concurrent approval claimed the pairing first. */
+class PairingTaken extends Error {}
+
 export class Auth {
   private failures: number[] = [];
   private pairingStarts: number[] = [];
 
   constructor(
-    private readonly database: Database,
+    private readonly database: Db,
     private readonly options: AuthOptions,
   ) {}
 
@@ -89,45 +104,46 @@ export class Auth {
     return this.options.mcpToken !== null;
   }
 
-  isSignedIn(req: Request, now: number): boolean {
+  async isSignedIn(req: Request, now: number): Promise<boolean> {
     const token = readCookie(req, SESSION_COOKIE);
     if (!token) return false;
-    const row = this.database
-      .query<{ expires_at: number }, [string]>("SELECT expires_at FROM sessions WHERE token_hash = ?")
-      .get(hashToken(token));
+    const row = await queryOne(
+      this.database,
+      sql`SELECT expires_at FROM sessions WHERE token_hash = ${hashToken(token)}`,
+      SessionExpirySchema,
+    );
     return row !== null && row.expires_at > now;
   }
 
-  verifyDeviceToken(token: string, now: number): { id: string; name: string } | null {
+  async verifyDeviceToken(token: string, now: number): Promise<{ id: string; name: string } | null> {
     const trimmed = token.trim();
     if (!trimmed) return null;
-    const hash = hashToken(trimmed);
-    const row = this.database
-      .query<{ id: string; name: string; last_used_at: number | null }, [string]>(
-        "SELECT id, name, last_used_at FROM device_tokens WHERE token_hash = ?",
-      )
-      .get(hash);
+    const row = await queryOne(
+      this.database,
+      sql`SELECT id, name, created_at, last_used_at FROM device_tokens WHERE token_hash = ${hashToken(trimmed)}`,
+      DeviceRowSchema,
+    );
     if (!row) return null;
     if (row.last_used_at === null || now - row.last_used_at >= DEVICE_LAST_USED_UPDATE_MS) {
-      this.database.query("UPDATE device_tokens SET last_used_at = ? WHERE id = ?").run(now, row.id);
+      await this.database.updateTable("device_tokens").set({ last_used_at: now }).where("id", "=", row.id).execute();
     }
     return { id: row.id, name: row.name };
   }
 
-  hasDeviceToken(req: Request, now: number): boolean {
+  async hasDeviceToken(req: Request, now: number): Promise<boolean> {
     const token = bearerToken(req);
     if (!token) return false;
-    return this.verifyDeviceToken(token, now) !== null;
+    return (await this.verifyDeviceToken(token, now)) !== null;
   }
 
-  deviceFromRequest(req: Request, now: number): { id: string; name: string } | null {
+  async deviceFromRequest(req: Request, now: number): Promise<{ id: string; name: string } | null> {
     const token = bearerToken(req);
     if (!token) return null;
     return this.verifyDeviceToken(token, now);
   }
 
-  isSyncAuthorized(req: Request, now: number): boolean {
-    return this.hasDeviceToken(req, now) || this.isSignedIn(req, now);
+  async isSyncAuthorized(req: Request, now: number): Promise<boolean> {
+    return (await this.hasDeviceToken(req, now)) || (await this.isSignedIn(req, now));
   }
 
   hasMcpToken(req: Request): boolean {
@@ -146,135 +162,141 @@ export class Auth {
       this.failures.push(now);
       return null;
     }
-    return { cookie: this.startSession(now) };
+    return { cookie: await this.startSession(now) };
   }
 
-  startSession(now: number): string {
+  async startSession(now: number): Promise<string> {
     const token = randomBytes(32).toString("base64url");
-    this.database
-      .query("INSERT INTO sessions (token_hash, expires_at, created_at) VALUES (?, ?, ?)")
-      .run(hashToken(token), now + SESSION_LIFETIME_MS, now);
-    this.database.query("DELETE FROM sessions WHERE expires_at <= ?").run(now);
+    await this.database
+      .insertInto("sessions")
+      .values({ token_hash: hashToken(token), expires_at: now + SESSION_LIFETIME_MS, created_at: now })
+      .execute();
+    await this.database.deleteFrom("sessions").where("expires_at", "<=", now).execute();
     return this.cookie(token, SESSION_LIFETIME_MS / 1000);
   }
 
-  signOut(req: Request): string {
+  async signOut(req: Request): Promise<string> {
     const token = readCookie(req, SESSION_COOKIE);
-    if (token) this.database.query("DELETE FROM sessions WHERE token_hash = ?").run(hashToken(token));
+    if (token) await this.database.deleteFrom("sessions").where("token_hash", "=", hashToken(token)).execute();
     return this.cookie("", 0);
   }
 
-  createDeviceToken(name: string, now: number): { device: DeviceInfo; token: string } {
+  async createDeviceToken(name: string, now: number, database: Db = this.database): Promise<{ device: DeviceInfo; token: string }> {
     const cleanName = name.trim().slice(0, 80) || "nanotes device";
     const id = randomBytes(12).toString("base64url");
     const token = `nts_${randomBytes(32).toString("base64url")}`;
-    this.database
-      .query("INSERT INTO device_tokens (id, name, token_hash, created_at, last_used_at) VALUES (?, ?, ?, ?, NULL)")
-      .run(id, cleanName, hashToken(token), now);
+    await database
+      .insertInto("device_tokens")
+      .values({ id, name: cleanName, token_hash: hashToken(token), created_at: now, last_used_at: null })
+      .execute();
     return {
       device: { id, name: cleanName, createdAt: now, lastUsedAt: null },
       token,
     };
   }
 
-  listDevices(): DeviceInfo[] {
-    return this.database
-      .query<{ id: string; name: string; created_at: number; last_used_at: number | null }, []>(
-        "SELECT id, name, created_at, last_used_at FROM device_tokens ORDER BY created_at DESC",
-      )
-      .all()
-      .map((row) => ({
-        id: row.id,
-        name: row.name,
-        createdAt: row.created_at,
-        lastUsedAt: row.last_used_at,
-      }));
+  async listDevices(): Promise<DeviceInfo[]> {
+    const rows = await queryRows(
+      this.database,
+      sql`SELECT id, name, created_at, last_used_at FROM device_tokens ORDER BY created_at DESC`,
+      DeviceRowSchema,
+    );
+    return rows.map(toDeviceInfo);
   }
 
-  renameDevice(id: string, name: string): DeviceInfo | null {
+  async renameDevice(id: string, name: string): Promise<DeviceInfo | null> {
     const cleanName = name.trim().slice(0, 80);
     if (!cleanName) return null;
-    const result = this.database.query("UPDATE device_tokens SET name = ? WHERE id = ?").run(cleanName, id);
-    if (result.changes === 0) return null;
-    const row = this.database
-      .query<{ id: string; name: string; created_at: number; last_used_at: number | null }, [string]>(
-        "SELECT id, name, created_at, last_used_at FROM device_tokens WHERE id = ?",
-      )
-      .get(id);
-    if (!row) return null;
-    return {
-      id: row.id,
-      name: row.name,
-      createdAt: row.created_at,
-      lastUsedAt: row.last_used_at,
-    };
+    const row = await queryOne(
+      this.database,
+      sql`UPDATE device_tokens SET name = ${cleanName} WHERE id = ${id} RETURNING id, name, created_at, last_used_at`,
+      DeviceRowSchema,
+    );
+    return row ? toDeviceInfo(row) : null;
   }
 
-  revokeDevice(id: string): boolean {
-    const result = this.database.query("DELETE FROM device_tokens WHERE id = ?").run(id);
-    return result.changes > 0;
+  async revokeDevice(id: string): Promise<boolean> {
+    const result = await this.database.deleteFrom("device_tokens").where("id", "=", id).executeTakeFirst();
+    return result.numDeletedRows > 0n;
   }
 
-  startPairing(deviceName: string, now: number): PairingStart | { limited: true } {
+  async startPairing(deviceName: string, now: number): Promise<PairingStart | { limited: true }> {
     this.pairingStarts = this.pairingStarts.filter((at) => at > now - PAIRING_WINDOW_MS);
     if (this.pairingStarts.length >= PAIRING_LIMIT) return { limited: true };
     this.pairingStarts.push(now);
 
-    this.database.query("DELETE FROM device_pairings WHERE expires_at <= ?").run(now);
+    await this.database.deleteFrom("device_pairings").where("expires_at", "<=", now).execute();
     const cleanName = deviceName.trim().slice(0, 80) || "nanotes device";
     const code = pairingCode();
     const pollToken = randomBytes(32).toString("base64url");
     const expiresAt = now + PAIRING_TTL_MS;
-    this.database
-      .query(
-        "INSERT INTO device_pairings (code, poll_token_hash, device_name, approved_token, expires_at, created_at) VALUES (?, ?, ?, NULL, ?, ?)",
-      )
-      .run(code, hashToken(pollToken), cleanName, expiresAt, now);
+    await this.database
+      .insertInto("device_pairings")
+      .values({
+        code,
+        poll_token_hash: hashToken(pollToken),
+        device_name: cleanName,
+        approved_token: null,
+        expires_at: expiresAt,
+        created_at: now,
+      })
+      .execute();
     return { code, pollToken, expiresAt };
   }
 
-  pairingInfo(code: string, now: number): { code: string; deviceName: string; expiresAt: number } | null {
-    const row = this.database
-      .query<{ code: string; device_name: string; expires_at: number; approved_token: string | null }, [string]>(
-        "SELECT code, device_name, expires_at, approved_token FROM device_pairings WHERE code = ?",
-      )
-      .get(code.trim().toUpperCase());
+  async pairingInfo(code: string, now: number): Promise<{ code: string; deviceName: string; expiresAt: number } | null> {
+    const row = await queryOne(
+      this.database,
+      sql`SELECT code, device_name, expires_at, approved_token FROM device_pairings WHERE code = ${code.trim().toUpperCase()}`,
+      PairingRowSchema,
+    );
     if (!row || row.expires_at <= now || row.approved_token !== null) return null;
     return { code: row.code, deviceName: row.device_name, expiresAt: row.expires_at };
   }
 
-  approvePairing(code: string, now: number): DeviceInfo | null {
+  approvePairing(code: string, now: number): Promise<DeviceInfo | null> {
     const normalized = code.trim().toUpperCase();
-    return this.database.transaction(() => {
-      const row = this.database
-        .query<{ device_name: string; expires_at: number; approved_token: string | null }, [string]>(
-          "SELECT device_name, expires_at, approved_token FROM device_pairings WHERE code = ?",
-        )
-        .get(normalized);
+    return this.database.transaction().execute(async (trx) => {
+      const row = await queryOne(
+        trx,
+        sql`SELECT code, device_name, expires_at, approved_token FROM device_pairings WHERE code = ${normalized}`,
+        PairingRowSchema,
+      );
       if (!row || row.expires_at <= now || row.approved_token !== null) return null;
-      const { device, token } = this.createDeviceToken(row.device_name, now);
-      this.database.query("UPDATE device_pairings SET approved_token = ? WHERE code = ?").run(token, normalized);
+      const { device, token } = await this.createDeviceToken(row.device_name, now, trx);
+      // Only the first approval claims the pairing; a concurrent one rolls back its device.
+      const claimed = await trx
+        .updateTable("device_pairings")
+        .set({ approved_token: token })
+        .where("code", "=", normalized)
+        .where("approved_token", "is", null)
+        .executeTakeFirst();
+      if (claimed.numUpdatedRows !== 1n) throw new PairingTaken();
       return device;
-    })();
+    }).catch((cause: unknown) => {
+      if (cause instanceof PairingTaken) return null;
+      throw cause;
+    });
   }
 
-  pollPairing(pollToken: string, now: number): PairingPollResult {
+  pollPairing(pollToken: string, now: number): Promise<PairingPollResult> {
     const hash = hashToken(pollToken);
-    return this.database.transaction(() => {
-      const row = this.database
-        .query<{ code: string; device_name: string; approved_token: string | null; expires_at: number }, [string]>(
-          "SELECT code, device_name, approved_token, expires_at FROM device_pairings WHERE poll_token_hash = ?",
-        )
-        .get(hash);
+    return this.database.transaction().execute(async (trx): Promise<PairingPollResult> => {
+      const row = await queryOne(
+        trx,
+        sql`SELECT code, device_name, approved_token, expires_at FROM device_pairings WHERE poll_token_hash = ${hash}`,
+        PairingRowSchema,
+      );
       if (!row || row.expires_at <= now) {
-        if (row) this.database.query("DELETE FROM device_pairings WHERE code = ?").run(row.code);
-        return { status: "expired" } as const;
+        if (row) await trx.deleteFrom("device_pairings").where("code", "=", row.code).execute();
+        return { status: "expired" };
       }
-      if (row.approved_token === null) return { status: "pending" } as const;
+      if (row.approved_token === null) return { status: "pending" };
       // One-time handoff: remove the pairing row as soon as the device claims its token.
-      this.database.query("DELETE FROM device_pairings WHERE code = ?").run(row.code);
-      return { status: "approved", token: row.approved_token, deviceName: row.device_name } as const;
-    })();
+      const claimed = await trx.deleteFrom("device_pairings").where("code", "=", row.code).executeTakeFirst();
+      if (claimed.numDeletedRows !== 1n) return { status: "expired" };
+      return { status: "approved", token: row.approved_token, deviceName: row.device_name };
+    });
   }
 
   private cookie(value: string, maxAgeSeconds: number): string {

@@ -1,6 +1,7 @@
-import type { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
-import { readSetting, writeSetting } from "./database.ts";
+import { sql } from "kysely";
+import { type Db, queryOne, queryRows, readSetting, writeSetting } from "./database.ts";
+import { PasskeyRowSchema, PasskeySetupLinkRowSchema } from "./schemas.ts";
 import { b64url, ES256, RS256, unb64url, verifyAssertion, verifyRegistration, WebAuthnError } from "./webauthn.ts";
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
@@ -13,6 +14,10 @@ interface Challenge {
   readonly setupToken: string | null;
 }
 
+const PasskeyIdSchema = PasskeyRowSchema.pick({ id: true });
+const StoredKeySchema = PasskeyRowSchema.pick({ cose_key: true, sign_count: true });
+const SetupLinkExpirySchema = PasskeySetupLinkRowSchema.pick({ expires_at: true });
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -24,7 +29,7 @@ export class Passkeys {
   private readonly challenges = new Map<string, Challenge>();
 
   constructor(
-    private readonly database: Database,
+    private readonly database: Db,
     origin: string,
   ) {
     const url = new URL(origin);
@@ -33,21 +38,23 @@ export class Passkeys {
     this.origins = new Set([url.origin]);
   }
 
-  any(): boolean {
-    return this.database.query("SELECT 1 FROM passkeys LIMIT 1").get() !== null;
+  async any(): Promise<boolean> {
+    return (await queryOne(this.database, sql`SELECT id FROM passkeys LIMIT 1`, PasskeyIdSchema)) !== null;
   }
 
-  createSetupLink(now: number): { url: string; token: string; expiresAt: number } {
+  async createSetupLink(now: number): Promise<{ url: string; token: string; expiresAt: number }> {
     const token = randomBytes(32).toString("base64url");
     const expiresAt = now + SETUP_LINK_TTL_MS;
-    this.database.query("INSERT INTO passkey_setup_links (token_hash, expires_at) VALUES (?, ?)").run(hashToken(token), expiresAt);
+    await this.database.insertInto("passkey_setup_links").values({ token_hash: hashToken(token), expires_at: expiresAt, used_at: null }).execute();
     return { url: `${this.origin}/#/passkey/${token}`, token, expiresAt };
   }
 
-  private setupLinkValid(token: string, now: number): boolean {
-    const row = this.database
-      .query<{ expires_at: number }, [string]>("SELECT expires_at FROM passkey_setup_links WHERE token_hash = ? AND used_at IS NULL")
-      .get(hashToken(token));
+  private async setupLinkValid(token: string, now: number): Promise<boolean> {
+    const row = await queryOne(
+      this.database,
+      sql`SELECT expires_at FROM passkey_setup_links WHERE token_hash = ${hashToken(token)} AND used_at IS NULL`,
+      SetupLinkExpirySchema,
+    );
     return row !== null && row.expires_at > now;
   }
 
@@ -66,24 +73,27 @@ export class Passkeys {
     return entry;
   }
 
-  private userId(): string {
-    const existing = readSetting(this.database, "passkey_user_id");
+  private async userId(): Promise<string> {
+    const existing = await readSetting(this.database, "passkey_user_id");
     if (existing) return existing;
     const id = randomBytes(16).toString("base64url");
-    writeSetting(this.database, "passkey_user_id", id);
+    await writeSetting(this.database, "passkey_user_id", id);
     return id;
   }
 
-  registerOptions(setupToken: string, now: number) {
-    if (!this.setupLinkValid(setupToken, now)) return null;
+  async registerOptions(setupToken: string, now: number) {
+    if (!(await this.setupLinkValid(setupToken, now))) return null;
     const { id, challenge } = this.issue("register", now, setupToken);
-    const existing = this.database.query<{ id: Uint8Array }, []>("SELECT id FROM passkeys").all();
+    const [existing, userId] = await Promise.all([
+      queryRows(this.database, sql`SELECT id FROM passkeys`, PasskeyIdSchema),
+      this.userId(),
+    ]);
     return {
       challengeId: id,
       publicKey: {
         challenge: b64url(challenge),
         rp: { id: this.rpId, name: "nanotes" },
-        user: { id: this.userId(), name: "nanotes", displayName: "nanotes" },
+        user: { id: userId, name: "nanotes", displayName: "nanotes" },
         pubKeyCredParams: [
           { type: "public-key" as const, alg: ES256 },
           { type: "public-key" as const, alg: RS256 },
@@ -96,22 +106,33 @@ export class Passkeys {
     };
   }
 
-  register(challengeId: unknown, credential: Record<string, unknown>, now: number): boolean {
+  async register(challengeId: unknown, credential: Record<string, unknown>, now: number): Promise<boolean> {
     const entry = this.take(challengeId, "register", now);
     const registered = verifyRegistration(
       { clientDataJSON: unb64url(credential["clientDataJSON"]), attestationObject: unb64url(credential["attestationObject"]) },
       { challenge: entry.challenge, origins: this.origins, rpId: this.rpId },
     );
-    return this.database.transaction(() => {
-      const used = this.database
-        .query("UPDATE passkey_setup_links SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?")
-        .run(now, hashToken(entry.setupToken as string), now);
-      if (used.changes !== 1) return false;
-      this.database
-        .query("INSERT INTO passkeys (id, cose_key, sign_count, created_at) VALUES (?, ?, ?, ?)")
-        .run(registered.credentialId, registered.coseKey, registered.signCount, now);
+    return this.database.transaction().execute(async (trx) => {
+      const used = await trx
+        .updateTable("passkey_setup_links")
+        .set({ used_at: now })
+        .where("token_hash", "=", hashToken(entry.setupToken as string))
+        .where("used_at", "is", null)
+        .where("expires_at", ">", now)
+        .executeTakeFirst();
+      if (used.numUpdatedRows !== 1n) return false;
+      await trx
+        .insertInto("passkeys")
+        .values({
+          id: registered.credentialId,
+          cose_key: registered.coseKey,
+          sign_count: registered.signCount,
+          created_at: now,
+          last_used_at: null,
+        })
+        .execute();
       return true;
-    })();
+    });
   }
 
   loginOptions(now: number) {
@@ -122,12 +143,10 @@ export class Passkeys {
     };
   }
 
-  login(challengeId: unknown, credential: Record<string, unknown>, now: number): boolean {
+  async login(challengeId: unknown, credential: Record<string, unknown>, now: number): Promise<boolean> {
     const entry = this.take(challengeId, "login", now);
     const credentialId = unb64url(credential["id"]);
-    const stored = this.database
-      .query<{ cose_key: Uint8Array; sign_count: number }, [Uint8Array]>("SELECT cose_key, sign_count FROM passkeys WHERE id = ?")
-      .get(credentialId);
+    const stored = await queryOne(this.database, sql`SELECT cose_key, sign_count FROM passkeys WHERE id = ${credentialId}`, StoredKeySchema);
     if (!stored) return false;
     const signCount = verifyAssertion(
       {
@@ -138,7 +157,7 @@ export class Passkeys {
       { challenge: entry.challenge, origins: this.origins, rpId: this.rpId },
       { coseKey: stored.cose_key, signCount: stored.sign_count },
     );
-    this.database.query("UPDATE passkeys SET sign_count = ?, last_used_at = ? WHERE id = ?").run(signCount, now, credentialId);
+    await this.database.updateTable("passkeys").set({ sign_count: signCount, last_used_at: now }).where("id", "=", credentialId).execute();
     return true;
   }
 }

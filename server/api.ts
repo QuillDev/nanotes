@@ -1,4 +1,5 @@
-import { Elysia, status as respond, t } from "elysia";
+import { Elysia, status as respond } from "elysia";
+import { z } from "zod";
 import type { Auth } from "./auth.ts";
 import type { CollabHub } from "./collab.ts";
 import type { NotesStore } from "./notes.ts";
@@ -51,31 +52,40 @@ async function parseObject({ request }: { request: Request }): Promise<Record<st
   }
 }
 
-const credentialBody = t.Object({
-  challengeId: t.Optional(t.Unknown()),
-  credential: t.Optional(t.Record(t.String(), t.Unknown())),
-});
+/** A field or body that fails without its own message answers "invalid request". */
+const INVALID = { error: "invalid request" };
 
-const noteFields = {
-  content: t.Optional(t.String()),
-  path: t.Optional(t.String()),
-  pinned: t.Optional(t.Boolean()),
-};
+const credentialBody = z.object(
+  {
+    challengeId: z.unknown().optional(),
+    credential: z.record(z.string(), z.unknown(), INVALID).optional(),
+  },
+  INVALID,
+);
+
+const noteBody = z.object(
+  {
+    content: z.string(INVALID).optional(),
+    path: z.string(INVALID).optional(),
+    pinned: z.boolean(INVALID).optional(),
+  },
+  INVALID,
+);
 
 const OP_ERROR = "each op requires string id and numeric baseRev";
-const pushOp = t.Object(
+const pushOp = z.object(
   {
-    id: t.String({ error: OP_ERROR }),
-    baseRev: t.Number({ error: OP_ERROR }),
-    path: t.Optional(t.String()),
-    content: t.Optional(t.String()),
-    pinned: t.Optional(t.Boolean()),
-    deleted: t.Optional(t.Boolean()),
+    id: z.string({ error: OP_ERROR }),
+    baseRev: z.number({ error: OP_ERROR }),
+    path: z.string(INVALID).optional(),
+    content: z.string(INVALID).optional(),
+    pinned: z.boolean(INVALID).optional(),
+    deleted: z.boolean(INVALID).optional(),
   },
   { error: OP_ERROR },
 );
 
-const nameBody = t.Object({ name: t.String({ error: "name required" }) }, { error: "name required" });
+const nameBody = z.object({ name: z.string({ error: "name required" }) }, { error: "name required" });
 
 function originGate({ request }: { request: Request }): void {
   if (!sameOrigin(request)) deny(403, "cross-origin request");
@@ -87,23 +97,23 @@ function gates({ auth, passkeys, clock }: ApiDeps) {
       if (passkeys === null) deny(404, "passkeys are not configured");
       originGate({ request });
     },
-    session: ({ request }: { request: Request }): void => {
-      if (!auth.isSignedIn(request, clock())) deny(401, "sign in required");
+    session: async ({ request }: { request: Request }): Promise<void> => {
+      if (!(await auth.isSignedIn(request, clock()))) deny(401, "sign in required");
       if (request.method !== "GET") originGate({ request });
     },
-    sync: ({ request }: { request: Request }): void => {
-      if (!auth.isSyncAuthorized(request, clock())) deny(401, "sync authorization required");
+    sync: async ({ request }: { request: Request }): Promise<void> => {
+      if (!(await auth.isSyncAuthorized(request, clock()))) deny(401, "sync authorization required");
     },
-    device: ({ request }: { request: Request }): void => {
-      if (!auth.deviceFromRequest(request, clock())) deny(401, "device authorization required");
+    device: async ({ request }: { request: Request }): Promise<void> => {
+      if (!(await auth.deviceFromRequest(request, clock()))) deny(401, "device authorization required");
     },
   };
 }
 
 /** Runs a WebAuthn ceremony step; a bad credential becomes `{ webauthnError }`. */
-function ceremony<T>(step: () => T): T | { readonly webauthnError: string } {
+async function ceremony<T>(step: () => Promise<T>): Promise<T | { readonly webauthnError: string }> {
   try {
-    return step();
+    return await step();
   } catch (cause) {
     if (cause instanceof WebAuthnError) return { webauthnError: cause.message };
     throw cause;
@@ -116,8 +126,8 @@ function signInRoutes(deps: ApiDeps) {
   const passkeys = deps.passkeys as Passkeys;
   const gate = gates(deps);
   return new Elysia()
-    .get("/login/methods", () => ({
-      passkey: deps.passkeys?.any() ?? false,
+    .get("/login/methods", async () => ({
+      passkey: (await deps.passkeys?.any()) ?? false,
       passkeyConfigured: deps.passkeys !== null,
       password: auth.passwordEnabled(),
     }))
@@ -135,47 +145,47 @@ function signInRoutes(deps: ApiDeps) {
           originGate({ request });
           if (!auth.passwordEnabled()) deny(404, "password login is disabled");
         },
-        body: t.Object({ password: t.String({ error: "password required" }) }, { error: "password required" }),
+        body: z.object({ password: z.string({ error: "password required" }) }, { error: "password required" }),
       },
     )
     .post(
       "/logout",
-      ({ request, set }) => {
-        set.headers["set-cookie"] = auth.signOut(request);
+      async ({ request, set }) => {
+        set.headers["set-cookie"] = await auth.signOut(request);
         return { ok: true as const };
       },
       { transform: originGate },
     )
     .post(
       "/passkeys/login/options",
-      ({ status }) => (passkeys.any() ? passkeys.loginOptions(clock()) : status(404, fail("no passkey registered"))),
+      async ({ status }) => ((await passkeys.any()) ? passkeys.loginOptions(clock()) : status(404, fail("no passkey registered"))),
       { transform: gate.passkeys },
     )
     .post(
       "/passkeys/login",
-      ({ body, set, status }) => {
+      async ({ body, set, status }) => {
         const now = clock();
-        const ok = ceremony(() => passkeys.login(body.challengeId, body.credential ?? {}, now));
+        const ok = await ceremony(() => passkeys.login(body.challengeId, body.credential ?? {}, now));
         if (typeof ok === "object") return status(400, fail(ok.webauthnError));
         if (!ok) return status(401, fail("unknown passkey"));
-        set.headers["set-cookie"] = auth.startSession(now);
+        set.headers["set-cookie"] = await auth.startSession(now);
         return { ok: true as const };
       },
       { transform: gate.passkeys, body: credentialBody },
     )
     .post(
       "/passkeys/register/options",
-      ({ body, status }) => passkeys.registerOptions(body.setup, clock()) ?? status(404, fail("setup link is invalid or expired")),
-      { transform: gate.passkeys, body: t.Object({ setup: t.String({ error: "setup token required" }) }, { error: "setup token required" }) },
+      async ({ body, status }) => (await passkeys.registerOptions(body.setup, clock())) ?? status(404, fail("setup link is invalid or expired")),
+      { transform: gate.passkeys, body: z.object({ setup: z.string({ error: "setup token required" }) }, { error: "setup token required" }) },
     )
     .post(
       "/passkeys/register",
-      ({ body, set, status }) => {
+      async ({ body, set, status }) => {
         const now = clock();
-        const ok = ceremony(() => passkeys.register(body.challengeId, body.credential ?? {}, now));
+        const ok = await ceremony(() => passkeys.register(body.challengeId, body.credential ?? {}, now));
         if (typeof ok === "object") return status(400, fail(ok.webauthnError));
         if (!ok) return status(404, fail("setup link was already used or expired"));
-        set.headers["set-cookie"] = auth.startSession(now);
+        set.headers["set-cookie"] = await auth.startSession(now);
         return { ok: true as const };
       },
       { transform: gate.passkeys, body: credentialBody },
@@ -189,8 +199,8 @@ function deviceRoutes(deps: ApiDeps) {
   return new Elysia()
     .post(
       "/device/start",
-      ({ body, request, status }) => {
-        const started = auth.startPairing(body.deviceName ?? "nanotes desktop", clock());
+      async ({ body, request, status }) => {
+        const started = await auth.startPairing(body.deviceName ?? "nanotes desktop", clock());
         if ("limited" in started) return status(429, fail("too many pairing requests, try again shortly"));
         return {
           code: started.code,
@@ -199,17 +209,17 @@ function deviceRoutes(deps: ApiDeps) {
           verificationUrl: `${requestOrigin(request, origin)}/#/pair/${started.code}`,
         };
       },
-      { body: t.Object({ deviceName: t.Optional(t.String()) }) },
+      { body: z.object({ deviceName: z.string(INVALID).optional() }, INVALID) },
     )
     .post(
       "/device/poll",
-      ({ body, status }) => {
+      async ({ body, status }) => {
         if (!body.pollToken) return status(400, fail("pollToken required"));
-        const result = auth.pollPairing(body.pollToken, clock());
+        const result = await auth.pollPairing(body.pollToken, clock());
         if (result.status === "expired") return status(410, fail("pairing expired"));
         return result;
       },
-      { body: t.Object({ pollToken: t.String({ error: "pollToken required" }) }, { error: "pollToken required" }) },
+      { body: z.object({ pollToken: z.string({ error: "pollToken required" }) }, { error: "pollToken required" }) },
     )
     .get(
       "/sync/changes",
@@ -217,18 +227,19 @@ function deviceRoutes(deps: ApiDeps) {
         const since = Number(query.since ?? "0");
         return notes.changesSince(Number.isFinite(since) ? Math.max(0, Math.floor(since)) : 0);
       },
-      { transform: gate.sync, query: t.Object({ since: t.Optional(t.String()) }) },
+      { transform: gate.sync, query: z.object({ since: z.string(INVALID).optional() }, INVALID) },
     )
     .post("/sync/push", ({ body }) => notes.push(body.ops, clock()), {
       transform: gate.sync,
-      body: t.Object({ ops: t.Array(pushOp, { error: "ops array required" }) }, { error: "ops array required" }),
+      body: z.object({ ops: z.array(pushOp, { error: "ops array required" }) }, { error: "ops array required" }),
     })
     .patch(
       "/device",
-      ({ body, request, status }) => {
-        const device = auth.deviceFromRequest(request, clock()) as { id: string };
+      async ({ body, request, status }) => {
+        const device = await auth.deviceFromRequest(request, clock());
+        if (!device) return status(401, fail("device authorization required"));
         if (!body.name.trim()) return status(400, fail("name required"));
-        const updated = auth.renameDevice(device.id, body.name);
+        const updated = await auth.renameDevice(device.id, body.name);
         if (!updated) return status(404, fail("device not found"));
         collab.notifyDeviceRenamed(updated.id, updated.name);
         return { ok: true as const, device: updated };
@@ -242,51 +253,56 @@ function sessionRoutes(deps: ApiDeps) {
   const { auth, notes, passkeys, collab, clock } = deps;
   return new Elysia().guard({ transform: gates(deps).session }, (signedIn) =>
     signedIn
-      .post("/passkeys/setup-link", ({ status }) => {
+      .post("/passkeys/setup-link", async ({ status }) => {
         if (passkeys === null) return status(404, fail("passkeys are not configured"));
-        const { url, expiresAt } = passkeys.createSetupLink(clock());
+        const { url, expiresAt } = await passkeys.createSetupLink(clock());
         return { url, expiresAt };
       })
       .post(
         "/device/approve",
-        ({ body, status }) => {
+        async ({ body, status }) => {
           if (!body.code.trim()) return status(400, fail("code required"));
-          const device = auth.approvePairing(body.code, clock());
+          const device = await auth.approvePairing(body.code, clock());
           return device ? { ok: true as const, device } : status(404, fail("pairing code is invalid or expired"));
         },
-        { body: t.Object({ code: t.String({ error: "code required" }) }, { error: "code required" }) },
+        { body: z.object({ code: z.string({ error: "code required" }) }, { error: "code required" }) },
       )
-      .get("/devices", () => ({ devices: auth.listDevices() }))
-      .post("/devices", ({ body, status }) => status(201, auth.createDeviceToken(body.name ?? "nanotes device", clock())), {
-        body: t.Object({ name: t.Optional(t.String()) }),
+      .get("/devices", async () => ({ devices: await auth.listDevices() }))
+      .post("/devices", async ({ body, status }) => status(201, await auth.createDeviceToken(body.name ?? "nanotes device", clock())), {
+        body: z.object({ name: z.string(INVALID).optional() }, INVALID),
       })
       .patch(
         "/devices/:id",
-        ({ params, body, status }) => {
+        async ({ params, body, status }) => {
           if (!body.name.trim()) return status(400, fail("name required"));
-          const updated = auth.renameDevice(params.id, body.name);
+          const updated = await auth.renameDevice(params.id, body.name);
           if (!updated) return status(404, fail("device not found"));
           collab.notifyDeviceRenamed(updated.id, updated.name);
           return { ok: true as const, device: updated };
         },
         { body: nameBody },
       )
-      .delete("/devices/:id", ({ params, status }) => {
-        if (!auth.revokeDevice(params.id)) return status(404, fail("device not found"));
+      .delete("/devices/:id", async ({ params, status }) => {
+        if (!(await auth.revokeDevice(params.id))) return status(404, fail("device not found"));
         collab.disconnectDevice(params.id);
         return { ok: true as const };
       })
-      .get("/notes", ({ query }) => notes.listWithRev(query.q), { query: t.Object({ q: t.Optional(t.String()) }) })
+      .get("/notes", ({ query }) => notes.listWithRev(query.q), { query: z.object({ q: z.string(INVALID).optional() }, INVALID) })
       .post(
         "/notes",
-        ({ body, status }) => status(201, notes.create({ content: body.content ?? "", path: body.path, pinned: body.pinned === true }, clock())),
-        { body: t.Object(noteFields) },
+        async ({ body, status }) =>
+          status(201, await notes.create({ content: body.content ?? "", path: body.path, pinned: body.pinned === true }, clock())),
+        { body: noteBody },
       )
-      .get("/notes/:id", ({ params, status }) => notes.get(params.id) ?? status(404, fail("note not found")))
-      .patch("/notes/:id", ({ params, body, status }) => notes.update(params.id, body, clock()) ?? status(404, fail("note not found")), {
-        body: t.Object(noteFields),
-      })
-      .delete("/notes/:id", ({ params, status }) => (notes.remove(params.id, clock()) ? { ok: true as const } : status(404, fail("note not found")))),
+      .get("/notes/:id", async ({ params, status }) => (await notes.get(params.id)) ?? status(404, fail("note not found")))
+      .patch(
+        "/notes/:id",
+        async ({ params, body, status }) => (await notes.update(params.id, body, clock())) ?? status(404, fail("note not found")),
+        { body: noteBody },
+      )
+      .delete("/notes/:id", async ({ params, status }) =>
+        (await notes.remove(params.id, clock())) ? { ok: true as const } : status(404, fail("note not found")),
+      ),
   );
 }
 
@@ -299,11 +315,11 @@ export function buildApi(deps: ApiDeps) {
   const { auth, clock } = deps;
   return new Elysia({ prefix: "/api" })
     .onParse(({ request, contentType }) => (contentType || request.method !== "GET" ? parseObject({ request }) : undefined))
-    .onError(({ code, error, request, status }) => {
+    .onError(async ({ code, error, request, status }) => {
       if (code === "VALIDATION") return status(400, fail(typeof error.customError === "string" ? error.customError : "invalid request"));
       if (code === "NOT_FOUND") {
         // Unknown routes answer like the signed-in area they'd fall into.
-        if (!auth.isSignedIn(request, clock())) return status(401, fail("sign in required"));
+        if (!(await auth.isSignedIn(request, clock()))) return status(401, fail("sign in required"));
         if (request.method !== "GET" && !sameOrigin(request)) return status(403, fail("cross-origin request"));
         return status(404, fail("not found"));
       }

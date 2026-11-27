@@ -21,13 +21,13 @@ const withHeader = (name: string, value: () => string): typeof fetch =>
 // The web app's typed client against the real server over HTTP.
 describe("typed API client", () => {
   const dir = mkdtempSync(join(tmpdir(), "nanotes-eden-"));
-  let app: ReturnType<typeof createApp>;
+  let app: Awaited<ReturnType<typeof createApp>>;
   let server: Server<WsClientData>;
   let origin = "";
   let cookie = "";
 
   beforeAll(async () => {
-    app = createApp({
+    app = await createApp({
       databasePath: join(dir, "db.sqlite"),
       passwordHash: await Bun.password.hash("pw"),
       mcpToken: null,
@@ -39,9 +39,9 @@ describe("typed API client", () => {
     origin = server.url.origin;
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     server.stop(true);
-    app.close();
+    await app.close();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -109,9 +109,9 @@ describe("typed API client", () => {
 describe("routing with short Host headers", () => {
   test("a short host or a prefixed path never reaches signed-in routes without a session", async () => {
     const dir = mkdtempSync(join(tmpdir(), "nanotes-host-"));
-    const app = createApp({ databasePath: join(dir, "db.sqlite"), passwordHash: null, mcpToken: null, secureCookies: false, origin: null, webDistDir: null });
+    const app = await createApp({ databasePath: join(dir, "db.sqlite"), passwordHash: null, mcpToken: null, secureCookies: false, origin: null, webDistDir: null });
     try {
-      app.notes.create({ content: "# Secret\n\nhidden" }, Date.now());
+      await app.notes.create({ content: "# Secret\n\nhidden" }, Date.now());
       const call = (url: string, host: string) => app.fetch(new Request(url, { headers: { host } }));
       const blocked = await Promise.all(
         [
@@ -141,7 +141,7 @@ describe("routing with short Host headers", () => {
         expect(body).toEqual({ passkey: false, passkeyConfigured: false, password: false });
       }
     } finally {
-      app.close();
+      await app.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
