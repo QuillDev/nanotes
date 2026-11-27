@@ -12,7 +12,9 @@
   "ignorePatterns": [
     "dist",
     "dist-web",
-    "src-tauri"
+    "src-tauri",
+    "desktop/dist",
+    "desktop/node_modules"
   ],
   "rules": {
     "jsx-a11y/label-has-associated-control": [
@@ -259,6 +261,36 @@
       ],
       "rules": {
         "unicorn/no-useless-fallback-in-spread": "off"
+      }
+    },
+    {
+      "files": [
+        "desktop/**/*.js",
+        "desktop/**/*.cjs"
+      ],
+      "env": {
+        "browser": false,
+        "node": true
+      },
+      "rules": {
+        "eslint/no-await-in-loop": "off",
+        "unicorn/require-post-message-target-origin": "off",
+        "eslint/no-underscore-dangle": [
+          "error",
+          {
+            "allow": [
+              "__TAURI_INTERNALS__"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "desktop/src/minisign.js"
+      ],
+      "rules": {
+        "promise/no-promise-in-callback": "off"
       }
     }
   ]

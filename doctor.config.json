@@ -96,6 +96,14 @@
         "rules": [
           "react-doctor/prefer-html-dialog"
         ]
+      },
+      {
+        "files": [
+          "desktop/src/sync.js"
+        ],
+        "rules": [
+          "react-doctor/async-await-in-loop"
+        ]
       }
     ]
   }

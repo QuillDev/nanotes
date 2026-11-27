@@ -1,10 +1,10 @@
 # Releasing NaNotes
 
-NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Windows (x64), Linux (x86_64), and Android (arm64) in parallel via `.github/workflows/release.yml`. The workflow only runs when cutting a release (`v*` tag push or manual `workflow_dispatch`), keeping pull requests fast.
+NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Windows (x64), Linux (x86_64), and Android (arm64) in parallel via `.github/workflows/release.yml`. The desktop apps are the Electron shell in `desktop/` (built with electron-builder); Android is still the Tauri app in `src-tauri/`. The workflow only runs when cutting a release (`v*` tag push or manual `workflow_dispatch`), keeping pull requests fast.
 
 ## Cutting a release
 
-1. Bump the version in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `nix/package.nix`, then commit and merge to `main`.
+1. Bump the version in `package.json` (the desktop apps take it from there), plus `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` for Android, then commit and merge to `main`.
 
 2. Tag and push:
 
@@ -21,7 +21,7 @@ NaNotes builds prebuilt release binaries for macOS (Apple Silicon and Intel), Wi
    - Windows x64: `NaNotes_<version>_x64-setup.exe` (NSIS installer + updater `.sig`)
    - Linux x86_64: `nanotes_<version>_linux_x86_64.tar.gz` (used by `install.sh`) and `.deb`
    - Android arm64: `nanotes.apk`, kept under a fixed name so `releases/latest/download/nanotes.apk` always points at the newest build
-   - In-app updater manifest: `latest.json` (signed with the `TAURI_SIGNING_PRIVATE_KEY` Actions secret, matching `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`)
+   - In-app updater manifest: `latest.json` (signed with the `TAURI_SIGNING_PRIVATE_KEY` Actions secret, matching `desktop/pubkey.txt`; installs of the earlier Tauri desktop app read the same manifest and update straight into the Electron app)
 
 ## Automatic package manager updates
 

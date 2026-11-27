@@ -19,7 +19,7 @@ case "$ARCH" in
     ASSET_SUFFIX="linux_x86_64.tar.gz"
     ;;
   *)
-    echo "Error: no prebuilt Linux binary for architecture '$ARCH'. Try 'nix run github:$REPO' or build from source." >&2
+    echo "Error: no prebuilt Linux binary for architecture '$ARCH'. Build it from source instead." >&2
     exit 1
     ;;
 esac
@@ -82,11 +82,21 @@ download "$DOWNLOAD_URL" "$ARCHIVE"
 
 tar -xzf "$ARCHIVE" -C "$TMP_DIR"
 
-mkdir -p "$INSTALL_DIR" "$DATA_DIR/applications" "$DATA_DIR/icons/hicolor/128x128/apps"
-install -m 0755 "$TMP_DIR/nanotes" "$INSTALL_DIR/nanotes"
+APP_DIR="$DATA_DIR/nanotes"
+mkdir -p "$INSTALL_DIR" "$DATA_DIR/applications" "$DATA_DIR/icons/hicolor/512x512/apps"
+rm -rf "$APP_DIR"
+cp -R "$TMP_DIR/nanotes" "$APP_DIR"
+# Electron's sandbox helper needs root or unrestricted user namespaces (Ubuntu 24+ restricts
+# them), so this per-user copy starts without it. The .deb package keeps the sandbox.
+rm -f "$INSTALL_DIR/nanotes"
+cat > "$INSTALL_DIR/nanotes" <<EOF
+#!/bin/sh
+exec "$APP_DIR/nanotes" --no-sandbox "\$@"
+EOF
+chmod 0755 "$INSTALL_DIR/nanotes"
 
 if [ -f "$TMP_DIR/nanotes.png" ]; then
-  install -m 0644 "$TMP_DIR/nanotes.png" "$DATA_DIR/icons/hicolor/128x128/apps/nanotes.png"
+  install -m 0644 "$TMP_DIR/nanotes.png" "$DATA_DIR/icons/hicolor/512x512/apps/nanotes.png"
 fi
 
 if [ -f "$TMP_DIR/nanotes.desktop" ]; then
@@ -97,17 +107,7 @@ if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$DATA_DIR/applications" >/dev/null 2>&1 || true
 fi
 
-echo "Installed nanotes ${TAG_NAME} to $INSTALL_DIR/nanotes"
-
-if command -v ldd >/dev/null 2>&1; then
-  MISSING=$(ldd "$INSTALL_DIR/nanotes" 2>/dev/null | grep 'not found' || true)
-  if [ -n "$MISSING" ]; then
-    echo "" >&2
-    echo "Warning: missing runtime libraries detected:" >&2
-    printf '%s\n' "$MISSING" >&2
-    echo "Install WebKitGTK 4.1 (e.g. 'sudo apt install libwebkit2gtk-4.1-0' on Debian/Ubuntu, 'sudo dnf install webkit2gtk4.1' on Fedora, or 'sudo pacman -S webkit2gtk-4.1' on Arch)." >&2
-  fi
-fi
+echo "Installed nanotes ${TAG_NAME} to $APP_DIR (command: $INSTALL_DIR/nanotes)"
 
 case ":${PATH}:" in
   *":$INSTALL_DIR:"*) ;;
