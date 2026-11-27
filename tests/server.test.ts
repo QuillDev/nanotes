@@ -926,4 +926,46 @@ describe("nanotes sync server", () => {
       app.close();
     }
   });
+
+  test("serves split web-app chunks with immutable caching and rejects unsafe asset paths", async () => {
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const distDir = mkdtempSync(join(tmpdir(), "nanotes-web-assets-"));
+    writeFileSync(join(distDir, "web-app.js"), "console.log('entry');");
+    writeFileSync(join(distDir, "web-app.css"), "body{}");
+    writeFileSync(join(distDir, "web-editor-abc12345.js"), "export default 1;");
+    writeFileSync(join(distDir, "secret.txt"), "nope");
+
+    const app = createApp({
+      databasePath: ":memory:",
+      passwordHash: null,
+      mcpToken: null,
+      secureCookies: false,
+      origin: null,
+      webDistDir: distDir,
+    });
+
+    try {
+      const entryRes = await app.fetch(new Request("http://localhost/assets/web-app.js"));
+      expect(entryRes.status).toBe(200);
+      expect(entryRes.headers.get("content-type")).toContain("application/javascript");
+      expect(entryRes.headers.get("cache-control")).toBe("no-cache");
+
+      const chunkRes = await app.fetch(new Request("http://localhost/assets/web-editor-abc12345.js"));
+      expect(chunkRes.status).toBe(200);
+      expect(chunkRes.headers.get("content-type")).toContain("application/javascript");
+      expect(chunkRes.headers.get("cache-control")).toContain("immutable");
+
+      const badExt = await app.fetch(new Request("http://localhost/assets/secret.txt"));
+      expect(badExt.status).toBe(404);
+
+      const traversal = await app.fetch(new Request("http://localhost/assets/..%2Fpackage.json"));
+      expect(traversal.status).toBe(404);
+    } finally {
+      app.close();
+      rmSync(distDir, { recursive: true, force: true });
+    }
+  });
 });

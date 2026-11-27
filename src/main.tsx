@@ -12,7 +12,7 @@ import { css } from '@codemirror/lang-css';
 import { html } from '@codemirror/lang-html';
 import { HighlightStyle, LanguageDescription, syntaxHighlighting, syntaxTree } from '@codemirror/language';
 import { EditorState, Prec, StateField } from '@codemirror/state';
-import type { Extension, Range } from '@codemirror/state';
+import type { Extension, Range, Transaction } from '@codemirror/state';
 import type { DecorationSet } from '@codemirror/view';
 import { Decoration, drawSelection, EditorView, keymap, placeholder as cmPlaceholder, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
 import { acceptCompletion, autocompletion, startCompletion, type Completion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
@@ -168,7 +168,8 @@ const HOTKEY_SYMBOLS: Record<string, string> = {
 // leading "#" markers stripped, mirroring the backend's title_from_content so
 // the topbar label matches what search shows. Falls back to "Untitled".
 function titleFromContent(content: string): string {
-  const firstLine = content.split('\n', 1)[0]?.trim() ?? '';
+  const newline = content.indexOf('\n');
+  const firstLine = (newline === -1 ? content : content.slice(0, newline)).trim();
   const withoutHeading = firstLine.replace(/^#+/, '').trim();
   return withoutHeading || 'Untitled';
 }
@@ -837,36 +838,73 @@ function skipHiddenRight(state: EditorState, position: number): number {
   return target;
 }
 
-function isVisibleWordChar(state: EditorState, position: number): boolean {
+interface LineRangeCache {
+  hidden: Map<number, HiddenRange[]>;
+  task: Map<number, HiddenRange | null>;
+}
+
+function createLineRangeCache(): LineRangeCache {
+  return { hidden: new Map(), task: new Map() };
+}
+
+function cachedHiddenRangesAtPosition(
+  state: EditorState,
+  position: number,
+  cache: LineRangeCache,
+): HiddenRange[] {
+  const line = state.doc.lineAt(Math.min(position, state.doc.length));
+  let ranges = cache.hidden.get(line.number);
+  if (!ranges) {
+    ranges = hiddenRangesForLine(state, line.number);
+    cache.hidden.set(line.number, ranges);
+  }
+  return ranges;
+}
+
+function cachedTaskMarkerRangeAtPosition(
+  state: EditorState,
+  position: number,
+  cache: LineRangeCache,
+): HiddenRange | null {
+  const line = state.doc.lineAt(Math.min(position, state.doc.length));
+  if (cache.task.has(line.number)) {
+    return cache.task.get(line.number) ?? null;
+  }
+  const range = taskMarkerRangeForLine(line);
+  cache.task.set(line.number, range);
+  return range;
+}
+
+function isVisibleWordChar(state: EditorState, position: number, cache: LineRangeCache): boolean {
   if (position < 0 || position >= state.doc.length) {
     return false;
   }
-  const taskMarker = taskMarkerRangeAtPosition(state, position);
+  const taskMarker = cachedTaskMarkerRangeAtPosition(state, position, cache);
   if (taskMarker && position >= taskMarker.from && position < taskMarker.to) {
     return false;
   }
-  if (hiddenRangesAtPosition(state, position).some(range => position >= range.from && position < range.to)) {
+  if (cachedHiddenRangesAtPosition(state, position, cache).some(range => position >= range.from && position < range.to)) {
     return false;
   }
   return /[\p{L}\p{N}_]/u.test(state.sliceDoc(position, position + 1));
 }
 
-function previousVisibleChar(state: EditorState, before: number): number | undefined {
+function previousVisibleChar(state: EditorState, before: number, cache: LineRangeCache): number | undefined {
   for (let position = Math.min(before - 1, state.doc.length - 1); position >= 0; position -= 1) {
-    const taskMarker = taskMarkerRangeAtPosition(state, position);
+    const taskMarker = cachedTaskMarkerRangeAtPosition(state, position, cache);
     if (taskMarker && position >= taskMarker.from && position < taskMarker.to) {
       return taskMarker.from;
     }
-    if (!hiddenRangesAtPosition(state, position).some(range => position >= range.from && position < range.to)) {
+    if (!cachedHiddenRangesAtPosition(state, position, cache).some(range => position >= range.from && position < range.to)) {
       return position;
     }
   }
   return undefined;
 }
 
-function nextVisibleChar(state: EditorState, from: number): number | undefined {
+function nextVisibleChar(state: EditorState, from: number, cache: LineRangeCache): number | undefined {
   for (let position = Math.max(from, 0); position < state.doc.length; position += 1) {
-    const taskMarker = taskMarkerRangeAtPosition(state, position);
+    const taskMarker = cachedTaskMarkerRangeAtPosition(state, position, cache);
     if (taskMarker && position >= taskMarker.from && position < taskMarker.to) {
       if (position === taskMarker.from) {
         return taskMarker.from;
@@ -874,7 +912,7 @@ function nextVisibleChar(state: EditorState, from: number): number | undefined {
       position = taskMarker.to - 1;
       continue;
     }
-    if (!hiddenRangesAtPosition(state, position).some(range => position >= range.from && position < range.to)) {
+    if (!cachedHiddenRangesAtPosition(state, position, cache).some(range => position >= range.from && position < range.to)) {
       return position;
     }
   }
@@ -882,35 +920,36 @@ function nextVisibleChar(state: EditorState, from: number): number | undefined {
 }
 
 function visibleWordBoundary(state: EditorState, position: number, direction: 'left' | 'right'): number | undefined {
+  const cache = createLineRangeCache();
   if (direction === 'left') {
-    let char = previousVisibleChar(state, position);
-    while (char !== undefined && !isVisibleWordChar(state, char)) {
-      char = previousVisibleChar(state, char);
+    let char = previousVisibleChar(state, position, cache);
+    while (char !== undefined && !isVisibleWordChar(state, char, cache)) {
+      char = previousVisibleChar(state, char, cache);
     }
     if (char === undefined) {
       return undefined;
     }
     let start = char;
-    let prev = previousVisibleChar(state, start);
-    while (prev !== undefined && isVisibleWordChar(state, prev)) {
+    let prev = previousVisibleChar(state, start, cache);
+    while (prev !== undefined && isVisibleWordChar(state, prev, cache)) {
       start = prev;
-      prev = previousVisibleChar(state, start);
+      prev = previousVisibleChar(state, start, cache);
     }
     return start;
   }
 
-  let char = nextVisibleChar(state, position);
-  while (char !== undefined && !isVisibleWordChar(state, char)) {
-    char = nextVisibleChar(state, char + 1);
+  let char = nextVisibleChar(state, position, cache);
+  while (char !== undefined && !isVisibleWordChar(state, char, cache)) {
+    char = nextVisibleChar(state, char + 1, cache);
   }
   if (char === undefined) {
     return undefined;
   }
   let end = char + 1;
-  let next = nextVisibleChar(state, end);
-  while (next !== undefined && isVisibleWordChar(state, next)) {
+  let next = nextVisibleChar(state, end, cache);
+  while (next !== undefined && isVisibleWordChar(state, next, cache)) {
     end = next + 1;
-    next = nextVisibleChar(state, end);
+    next = nextVisibleChar(state, end, cache);
   }
   return end;
 }
@@ -1263,6 +1302,8 @@ const skipHiddenMarkdownKeymap = keymap.of([
 
 const FENCE_RE = /^(\s*)(`{3,}|~{3,})([^`~]*)$/;
 const CLOSE_FENCE_RE = /^\s*(`{3,}|~{3,})\s*$/;
+const BACKTICK_RUN_RE = /^\s*(`+)\s*$/;
+const TILDE_RUN_RE = /^\s*(~+)\s*$/;
 
 // In CommonMark a content line made entirely of the fence character closes the
 // block as soon as it is at least as long as the opening fence. So typing ``` on
@@ -1300,7 +1341,7 @@ const growFenceForInnerRun = EditorView.inputHandler.of((view, from, to, text) =
   // The content line as it would read after this insertion.
   const offset = from - curLine.from;
   const resulting = curLine.text.slice(0, offset) + text + curLine.text.slice(to - curLine.from);
-  const runMatch = new RegExp(`^\\s*(\\${fenceChar}+)\\s*$`).exec(resulting);
+  const runMatch = (fenceChar === '`' ? BACKTICK_RUN_RE : TILDE_RUN_RE).exec(resulting);
   if (!runMatch || runMatch[1].length < openLen) {
     return false; // wouldn't act as a closing fence; let it type normally
   }
@@ -1550,18 +1591,23 @@ function openLanguageDropdown(view: EditorView, anchor: HTMLElement, linePos: nu
 // widget, it is non-editable: the cursor cannot land on the header row at all,
 // only in the content below.
 class FenceHeaderWidget extends WidgetType {
-  constructor(readonly label: string, readonly linePos: number) {
+  constructor(readonly label: string) {
     super();
   }
 
   eq(other: FenceHeaderWidget) {
-    return other.label === this.label && other.linePos === this.linePos;
+    return other.label === this.label;
   }
 
   toDOM(view: EditorView) {
     const header = document.createElement('div');
     header.className = 'cm-code-header';
     header.contentEditable = 'false';
+
+    const resolveLinePos = () => {
+      const pos = view.posAtDOM(header);
+      return view.state.doc.lineAt(Math.min(pos, view.state.doc.length)).from;
+    };
 
     const chip = document.createElement('span');
     chip.className = 'cm-code-lang-chip';
@@ -1573,7 +1619,7 @@ class FenceHeaderWidget extends WidgetType {
     chip.addEventListener('click', event => {
       event.preventDefault();
       event.stopPropagation();
-      openLanguageDropdown(view, chip, this.linePos);
+      openLanguageDropdown(view, chip, resolveLinePos());
     });
 
     const dismiss = document.createElement('button');
@@ -1586,7 +1632,7 @@ class FenceHeaderWidget extends WidgetType {
     dismiss.addEventListener('click', event => {
       event.preventDefault();
       event.stopPropagation();
-      dissolveBlockAt(view, this.linePos);
+      dissolveBlockAt(view, resolveLinePos());
     });
 
     header.append(chip, dismiss);
@@ -1603,6 +1649,8 @@ interface CodeBlockDecorations {
   atomic: DecorationSet;
 }
 
+const FENCE_CONTAINERS = new Set(['Document', 'Blockquote', 'BulletList', 'OrderedList', 'ListItem']);
+
 function buildCodeBlockDecorations(state: EditorState): CodeBlockDecorations {
   const decorations: Array<Range<Decoration>> = [];
   const atomic: Array<Range<Decoration>> = [];
@@ -1610,7 +1658,7 @@ function buildCodeBlockDecorations(state: EditorState): CodeBlockDecorations {
   tree.iterate({
     enter: node => {
       if (node.name !== 'FencedCode') {
-        return;
+        return FENCE_CONTAINERS.has(node.name) ? undefined : false;
       }
       const openLine = state.doc.lineAt(node.from);
       const endLine = state.doc.lineAt(node.to);
@@ -1646,7 +1694,7 @@ function buildCodeBlockDecorations(state: EditorState): CodeBlockDecorations {
       const info = FENCE_RE.exec(openLine.text)?.[3] ?? '';
       decorations.push(
         Decoration.replace({
-          widget: new FenceHeaderWidget(languageLabel(info), openLine.from),
+          widget: new FenceHeaderWidget(languageLabel(info)),
           block: true,
         }).range(openLine.from, openLine.to),
       );
@@ -1660,6 +1708,7 @@ function buildCodeBlockDecorations(state: EditorState): CodeBlockDecorations {
       // rather than landing on the hidden ``` markers.
       atomic.push(Decoration.mark({}).range(openLine.from, openLine.to));
       atomic.push(Decoration.mark({}).range(endLine.from, endLine.to));
+      return false;
     },
   });
   return { deco: Decoration.set(decorations, true), atomic: Decoration.set(atomic, true) };
@@ -1685,30 +1734,72 @@ const codeBlockLineDecorations = StateField.define<CodeBlockDecorations>({
 // Block-level image previews live in a StateField (not the ViewPlugin above):
 // CodeMirror rejects block decorations supplied by a plugin, so they must be
 // provided through the editor state.
+function addImagePreviewDecorationsForLine(
+  line: { text: string; to: number },
+  decorations: Array<Range<Decoration>>,
+) {
+  // Fast reject lines that cannot contain a markdown link/image target.
+  if (!line.text.includes('](')) {
+    return;
+  }
+  // `![..](..)` always previews; a plain `[..](..)` link previews only when the
+  // target looks like an image file, so a normal text link stays text.
+  for (const match of line.text.matchAll(IMAGE_LINK_RE)) {
+    const isImageSyntax = match[1] === '!';
+    const target = match[2];
+    if (isImageSyntax || IMAGE_EXT_RE.test(target)) {
+      decorations.push(
+        Decoration.widget({ widget: new ImageWidget(target), block: true, side: 1 }).range(line.to),
+      );
+    }
+  }
+}
+
 function buildImagePreviewDecorations(state: EditorState): DecorationSet {
   const decorations: Array<Range<Decoration>> = [];
   for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber++) {
-    const line = state.doc.line(lineNumber);
-    // `![..](..)` always previews; a plain `[..](..)` link previews only when the
-    // target looks like an image file, so a normal text link stays text.
-    for (const match of line.text.matchAll(IMAGE_LINK_RE)) {
-      const isImageSyntax = match[1] === '!';
-      const target = match[2];
-      if (isImageSyntax || IMAGE_EXT_RE.test(target)) {
-        decorations.push(
-          Decoration.widget({ widget: new ImageWidget(target), block: true, side: 1 }).range(line.to),
-        );
-      }
-    }
+    addImagePreviewDecorationsForLine(state.doc.line(lineNumber), decorations);
   }
   return Decoration.set(decorations, true);
+}
+
+function updateImagePreviewDecorations(prev: DecorationSet, transaction: Transaction): DecorationSet {
+  const doc = transaction.state.doc;
+  const changedLineRanges: Array<[number, number]> = [];
+  transaction.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+    const startLine = doc.lineAt(fromB).number;
+    const endLine = doc.lineAt(toB).number;
+    const last = changedLineRanges[changedLineRanges.length - 1];
+    if (last && startLine <= last[1] + 1) {
+      last[1] = Math.max(last[1], endLine);
+    } else {
+      changedLineRanges.push([startLine, endLine]);
+    }
+  });
+  let next = prev.map(transaction.changes);
+  for (const [startLine, endLine] of changedLineRanges) {
+    const filterFrom = doc.line(startLine).from;
+    const filterTo = doc.line(endLine).to;
+    const add: Array<Range<Decoration>> = [];
+    for (let lineNumber = startLine; lineNumber <= endLine; lineNumber += 1) {
+      addImagePreviewDecorationsForLine(doc.line(lineNumber), add);
+    }
+    next = next.update({
+      filterFrom,
+      filterTo,
+      filter: () => false,
+      add,
+      sort: true,
+    });
+  }
+  return next;
 }
 
 const imagePreviewDecorations = StateField.define<DecorationSet>({
   create: state => buildImagePreviewDecorations(state),
   update(value, transaction) {
     if (transaction.docChanged) {
-      return buildImagePreviewDecorations(transaction.state);
+      return updateImagePreviewDecorations(value, transaction);
     }
     return value.map(transaction.changes);
   },
@@ -2208,11 +2299,14 @@ function App() {
   // commits on every blur, so this lets loadNote ignore commits that don't
   // actually change the folder (see loadNote).
   const loadedDirRef = React.useRef<string | null>(null);
-  const shellStyle: ShellStyle = {
-    '--glass-bg': glassBackground(glassTint, glassOpacity),
-    '--glass-blur': `${glassBlur}px`,
-    '--glass-softness': String(glassBlur / 40),
-  };
+  const shellStyle = React.useMemo<ShellStyle>(
+    () => ({
+      '--glass-bg': glassBackground(glassTint, glassOpacity),
+      '--glass-blur': `${glassBlur}px`,
+      '--glass-softness': String(glassBlur / 40),
+    }),
+    [glassBlur, glassOpacity, glassTint],
+  );
 
   // Persist the note currently in the editor if it has unsaved changes. The
   // debounced autosave is cancelled the instant we switch notes, so without this
@@ -2314,7 +2408,7 @@ function App() {
       return;
     }
     loadedDirRef.current = notesDir;
-    noteGenRef.current += 1;
+    const gen = ++noteGenRef.current;
     setState(prev => ({ ...prev, notesDir, status: 'loading', message: 'Loading…' }));
     if (!IS_TAURI) {
       const content = window.localStorage.getItem('nanotes:browserPreviewContent') ?? SAMPLE_NOTE;
@@ -2332,6 +2426,9 @@ function App() {
       notePath: state.notePath,
     })
       .then(content => {
+        if (noteGenRef.current !== gen) {
+          return;
+        }
         setState(prev => ({
           ...prev,
           content,
@@ -2341,6 +2438,9 @@ function App() {
         }));
       })
       .catch((error: unknown) => {
+        if (noteGenRef.current !== gen) {
+          return;
+        }
         // Forget the failed directory so committing again retries the load.
         loadedDirRef.current = null;
         setState(prev => ({
@@ -2353,7 +2453,7 @@ function App() {
 
   const openNote = React.useCallback((notePath: string) => {
     flushPendingSave();
-    noteGenRef.current += 1;
+    const gen = ++noteGenRef.current;
     setSearchOpen(false);
     setSearchQuery('');
     setSettingsOpen(false);
@@ -2371,10 +2471,16 @@ function App() {
       notePath,
     })
       .then(content => {
+        if (noteGenRef.current !== gen) {
+          return;
+        }
         setState(prev => ({ ...prev, notePath, content, savedContent: content, status: 'saved', message: 'Saved' }));
         focusEditor();
       })
       .catch((error: unknown) => {
+        if (noteGenRef.current !== gen) {
+          return;
+        }
         setState(prev => ({ ...prev, status: 'error', message: String(error) }));
       });
   }, [flushPendingSave, focusEditor]);
@@ -3380,11 +3486,12 @@ function App() {
 
   useDebouncedSave(state, setState, noteGenRef, Boolean(syncUrl.trim() && syncToken.trim()));
 
+  const pinnedPathSet = React.useMemo(() => new Set(pinnedPaths), [pinnedPaths]);
+
   const filteredNotes = React.useMemo(() => {
-    const pinnedSet = new Set(pinnedPaths);
-    const ordered = [...notes].sort((a, b) => Number(pinnedSet.has(b.path)) - Number(pinnedSet.has(a.path)));
+    const ordered = [...notes].sort((a, b) => Number(pinnedPathSet.has(b.path)) - Number(pinnedPathSet.has(a.path)));
     return ordered.slice(0, 10);
-  }, [notes, pinnedPaths]);
+  }, [notes, pinnedPathSet]);
 
   React.useEffect(() => {
     setSelectedIndex(0);
@@ -3453,7 +3560,7 @@ function App() {
             <div className="islandResults">
               <div className="noteResults morphScroll">
                 {filteredNotes.map((note, index) => {
-                  const pinned = pinnedPaths.includes(note.path);
+                  const pinned = pinnedPathSet.has(note.path);
                   const classNames = ['noteResult', 'morphRow'];
                   if (index === selectedIndex) {
                     classNames.push('noteResult-active');
