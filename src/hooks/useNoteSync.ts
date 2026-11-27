@@ -1,7 +1,5 @@
 import React from 'react';
 import type { EditorView } from '@codemirror/view';
-import { invoke } from '@tauri-apps/api/core';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   CollabClient,
   NoteCollabSession,
@@ -9,14 +7,11 @@ import {
   hexToBytes,
   type CollabConnectionStatus,
 } from '../collab';
+import { IS_DESKTOP, invoke } from '../desktop/bridge';
 import {
   DEFAULT_CLIENT_NAME,
-  IS_TAURI,
   type NoteEntry,
   type NoteState,
-  type PairingPollResult,
-  type PairingStartResult,
-  type SyncResult,
 } from '../desktop/config';
 
 export interface UseNoteSyncOptions {
@@ -86,7 +81,7 @@ export function useNoteSync({
   }, []);
 
   const runSync = React.useCallback(async () => {
-    if (!IS_TAURI || !syncUrl.trim() || !syncToken.trim() || syncInFlightRef.current) {
+    if (!IS_DESKTOP || !syncUrl.trim() || !syncToken.trim() || syncInFlightRef.current) {
       return;
     }
     syncInFlightRef.current = true;
@@ -94,7 +89,7 @@ export function useNoteSync({
     setSyncError(null);
     try {
       const current = stateRef.current;
-      const result = await invoke<SyncResult>('sync_now', {
+      const result = await invoke('sync_now', {
         notesDir: current.notesDir,
         serverUrl: syncUrl.trim(),
         syncToken: syncToken.trim(),
@@ -117,7 +112,7 @@ export function useNoteSync({
         const latest = stateRef.current;
         const nextPath = result.activeNotePath || latest.notePath;
         if (latest.content === latest.savedContent && nextPath) {
-          const refreshed = await invoke<string>('read_note', {
+          const refreshed = await invoke('read_note', {
             notesDir: latest.notesDir,
             notePath: nextPath,
           }).catch(() => null);
@@ -132,7 +127,7 @@ export function useNoteSync({
       }
 
       if (result.pulled > 0 || result.pushed > 0) {
-        void invoke<NoteEntry[]>('list_notes', { notesDir: current.notesDir, query: '' })
+        void invoke('list_notes', { notesDir: current.notesDir, query: '' })
           .then(entries => setNotes(entries))
           .catch(() => undefined);
       }
@@ -147,7 +142,7 @@ export function useNoteSync({
   }, [pinnedPathsRef, setNotes, setPinnedPaths, setState, stateRef, syncToken, syncUrl]);
 
   const startSyncSignIn = React.useCallback(async () => {
-    if (!IS_TAURI || pairingStarting) {
+    if (!IS_DESKTOP || pairingStarting) {
       return;
     }
     const serverUrl = syncUrl.trim();
@@ -162,19 +157,19 @@ export function useNoteSync({
     setSyncStatus('idle');
     try {
       const customName = syncDeviceNameRef.current.trim();
-      const started = await invoke<PairingStartResult>('sync_start_pairing', {
+      const started = await invoke('sync_start_pairing', {
         serverUrl,
         ...(customName ? { deviceName: customName } : {}),
       });
       setPairingStarting(false);
       setPairingCode(started.code);
       setPairingUrl(started.verificationUrl);
-      void openUrl(started.verificationUrl).catch((error: unknown) => {
+      void invoke('open_url', { url: started.verificationUrl }).catch((error: unknown) => {
         setSyncError(`Could not open browser: ${error instanceof Error ? error.message : String(error)}`);
       });
 
       pairingTimerRef.current = window.setInterval(() => {
-        void invoke<PairingPollResult>('sync_poll_pairing', {
+        void invoke('sync_poll_pairing', {
           serverUrl,
           pollToken: started.pollToken,
         })
@@ -202,7 +197,7 @@ export function useNoteSync({
   React.useEffect(() => () => stopPairing(), [stopPairing]);
 
   React.useEffect(() => {
-    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
+    if (!IS_DESKTOP || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
       return;
     }
     void runSync();
@@ -215,7 +210,7 @@ export function useNoteSync({
   }, [appConfigReady, runSync, syncToken, syncUrl]);
 
   React.useEffect(() => {
-    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
+    if (!IS_DESKTOP || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
       return;
     }
     // While a live Yjs room is active, WebSocket streams content edits in real time;
@@ -233,7 +228,7 @@ export function useNoteSync({
   }, [activeNoteId, appConfigReady, runSync, state.notePath, state.savedContent, syncToken, syncUrl]);
 
   React.useEffect(() => {
-    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
+    if (!IS_DESKTOP || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -246,7 +241,7 @@ export function useNoteSync({
     async (rawName: string) => {
       const serverUrl = syncUrl.trim();
       const token = syncToken.trim();
-      if (!IS_TAURI || !serverUrl || !token) {
+      if (!IS_DESKTOP || !serverUrl || !token) {
         return;
       }
       const nextName = rawName.trim().slice(0, 80) || DEFAULT_CLIENT_NAME;
@@ -259,7 +254,7 @@ export function useNoteSync({
       }
       try {
         lastSentDeviceNameRef.current = nextName;
-        const saved = await invoke<string>('sync_rename_device', {
+        const saved = await invoke('sync_rename_device', {
           serverUrl,
           syncToken: token,
           deviceName: nextName,
@@ -276,7 +271,7 @@ export function useNoteSync({
   );
 
   React.useEffect(() => {
-    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim() || !deviceNameDirtyRef.current) {
+    if (!IS_DESKTOP || !appConfigReady || !syncUrl.trim() || !syncToken.trim() || !deviceNameDirtyRef.current) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -287,7 +282,7 @@ export function useNoteSync({
 
   // Persistent WebSocket live-collab connection for real-time CRDT editing and instant note events.
   React.useEffect(() => {
-    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
+    if (!IS_DESKTOP || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
       collabClientRef.current?.close();
       collabClientRef.current = null;
       setLiveSession(null);
@@ -361,7 +356,7 @@ export function useNoteSync({
   // Resolve the active note's server ID whenever the active file changes.
   const isLoadingNote = state.status === 'loading';
   React.useEffect(() => {
-    if (!IS_TAURI || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
+    if (!IS_DESKTOP || !appConfigReady || !syncUrl.trim() || !syncToken.trim()) {
       setActiveNoteId(null);
       return;
     }
@@ -370,7 +365,7 @@ export function useNoteSync({
       return;
     }
     let cancelled = false;
-    void invoke<string | null>('sync_note_id_for_path', {
+    void invoke('sync_note_id_for_path', {
       notesDir: state.notesDir,
       notePath: state.notePath,
     })
@@ -392,7 +387,7 @@ export function useNoteSync({
   // Attach a live Yjs room for the active synced note and persist local CRDT state for offline merges.
   React.useEffect(() => {
     const client = collabClientRef.current;
-    if (!IS_TAURI || !client || !activeNoteId) {
+    if (!IS_DESKTOP || !client || !activeNoteId) {
       setLiveSession(null);
       return;
     }
@@ -415,7 +410,7 @@ export function useNoteSync({
       setLiveSession(readySession);
     };
 
-    void invoke<string | null>('sync_read_yjs_state', { notesDir, noteId: activeNoteId })
+    void invoke('sync_read_yjs_state', { notesDir, noteId: activeNoteId })
       .catch(() => null)
       .then(savedHex => {
         if (cancelled || collabClientRef.current !== client) {
@@ -483,7 +478,7 @@ export function useNoteSync({
   // Keep .nanotes-sync.json aligned whenever a live-edited note flushes to its local .md file.
   React.useEffect(() => {
     const session = liveSessionRef.current;
-    if (!IS_TAURI || !session || !session.ready || session.rev === null || !state.notePath.trim()) {
+    if (!IS_DESKTOP || !session || !session.ready || session.rev === null || !state.notePath.trim()) {
       return;
     }
     void invoke('sync_mark_note_synced', {

@@ -12,7 +12,6 @@
   "ignorePatterns": [
     "dist",
     "dist-web",
-    "src-tauri",
     "desktop/dist",
     "desktop/node_modules"
   ],
@@ -61,7 +60,6 @@
         "src/collab.ts",
         "src/components/SettingsOverlay.tsx",
         "src/desktop/config.ts",
-        "src/hooks/useAppUpdater.ts",
         "src/hooks/useNoteSync.ts",
         "src/web-app.tsx"
       ],
@@ -73,7 +71,6 @@
       "files": [
         "server/app.ts",
         "src/components/SettingsOverlay.tsx",
-        "src/hooks/useAppUpdater.ts",
         "src/hooks/useNoteSync.ts",
         "src/main.tsx",
         "src/web-app.tsx",
@@ -201,7 +198,7 @@
     },
     {
       "files": [
-        "src/hooks/useAppUpdater.ts"
+        "src/hooks/useAndroidUpdater.ts"
       ],
       "rules": {
         "eslint/no-underscore-dangle": "off"
@@ -209,7 +206,6 @@
     },
     {
       "files": [
-        "src/hooks/useAppUpdater.ts",
         "src/main.tsx"
       ],
       "rules": {
@@ -274,15 +270,7 @@
       },
       "rules": {
         "eslint/no-await-in-loop": "off",
-        "unicorn/require-post-message-target-origin": "off",
-        "eslint/no-underscore-dangle": [
-          "error",
-          {
-            "allow": [
-              "__TAURI_INTERNALS__"
-            ]
-          }
-        ]
+        "unicorn/require-post-message-target-origin": "off"
       }
     },
     {

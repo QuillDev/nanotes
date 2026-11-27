@@ -1,5 +1,5 @@
 // App settings, the saved window frame, hotkey strings and the Linux autostart entry.
-// Files live in the same config folder the earlier (Tauri) app used, so updates keep them.
+// Files live in the same config folder the earlier app used, so updates keep them.
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 

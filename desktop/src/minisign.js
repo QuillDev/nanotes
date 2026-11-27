@@ -1,5 +1,5 @@
 // Checks a download against the updater key built into the app. Releases are signed with the
-// same minisign key the earlier (Tauri) app used, so both read one manifest: the signature is the
+// same minisign key the earlier app used, so both read one manifest: the signature is the
 // base64 of a minisign .sig file over the BLAKE2b-512 hash of the file ("ED", prehashed).
 import { createPublicKey, verify } from "node:crypto"
 import { createReadStream } from "node:fs"

@@ -1,5 +1,4 @@
 import React from 'react';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import { X } from 'lucide-react';
 import {
   Button,
@@ -11,11 +10,11 @@ import {
   Switch,
 } from 'nakomponents';
 import type { CollabConnectionStatus } from '../collab';
+import { IS_DESKTOP, invoke } from '../desktop/bridge';
 import {
   DEFAULT_CLIENT_NAME,
   formatHotkey,
   IS_ANDROID,
-  IS_TAURI,
 } from '../desktop/config';
 import type { UpdateState } from '../hooks/useAppUpdater';
 import { PathInput } from './PathInput';
@@ -174,7 +173,7 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
           </>
         )}
 
-        {IS_TAURI ? (
+        {IS_DESKTOP ? (
           <Collapsible
             className="settingsFold"
             open={props.syncOpen}
@@ -240,7 +239,7 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
                           size="xs"
                           type="button"
                           onClick={() => {
-                            void openUrl(props.pairingUrl!).catch((error: unknown) => {
+                            void invoke('open_url', { url: props.pairingUrl! }).catch((error: unknown) => {
                               props.onSyncError(
                                 `Could not open browser: ${error instanceof Error ? error.message : String(error)}`,
                               );
@@ -299,7 +298,7 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
           </div>
         )}
 
-        {IS_TAURI ? (
+        {IS_DESKTOP ? (
           <div className="settingRow">
             <strong>
               Updates
@@ -337,7 +336,7 @@ export function SettingsOverlay(props: SettingsOverlayProps) {
             </Button>
           </div>
         ) : null}
-        {IS_TAURI && props.updateError ? <div className="syncError">{props.updateError}</div> : null}
+        {IS_DESKTOP && props.updateError ? <div className="syncError">{props.updateError}</div> : null}
       </div>
     </div>
   );

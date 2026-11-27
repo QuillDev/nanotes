@@ -40,6 +40,20 @@ const LIVE_WEB_SHELL_HTML = `<!doctype html>
 </html>
 `;
 
+// Lets the Android app (android/, signed with the release key) use this server's passkeys.
+const ANDROID_ASSET_LINKS = [
+  {
+    relation: ["delegate_permission/common.handle_all_urls", "delegate_permission/common.get_login_creds"],
+    target: {
+      namespace: "android_app",
+      package_name: "moe.quill.nanotes",
+      sha256_cert_fingerprints: [
+        "4A:41:9C:76:3B:54:2A:33:42:9E:E4:DC:2E:BD:52:F9:09:20:D8:1D:2A:76:59:48:7E:4F:46:6C:A3:D1:EA:13",
+      ],
+    },
+  },
+];
+
 function json(value: unknown, init: ResponseInit = {}): Response {
   return Response.json(value, init);
 }
@@ -81,6 +95,7 @@ export async function createApp(options: AppOptions): Promise<{
   async function fetch(req: Request, server?: Server<WsClientData>): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === "/health") return json({ ok: true });
+    if (url.pathname === "/.well-known/assetlinks.json" && passkeys) return json(ANDROID_ASSET_LINKS);
     if (url.pathname === "/api/ws") {
       if (!server) return error(426, "websocket upgrade required");
       const now = clock();

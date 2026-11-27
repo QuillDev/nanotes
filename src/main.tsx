@@ -2,12 +2,11 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import CodeMirror from '@uiw/react-codemirror';
 import type { EditorView } from '@codemirror/view';
-import { invoke } from '@tauri-apps/api/core';
-import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
 import { Download, Menu, Plus, X } from 'lucide-react';
 import { Button } from 'nakomponents';
 import { SearchIsland } from './components/SearchIsland';
 import { SettingsOverlay } from './components/SettingsOverlay';
+import { IS_DESKTOP, invoke } from './desktop/bridge';
 import {
   appShortcutLabel,
   browserPreviewConfig,
@@ -21,14 +20,11 @@ import {
   HOTKEY_MODIFIER_CODES,
   IS_ANDROID,
   IS_MAC,
-  IS_TAURI,
   IS_WINDOWS,
   normalizeAppConfig,
   titleFromContent,
   writeBrowserPreviewConfig,
-  type AppConfig,
   type NoteEntry,
-  type NoteSaveResult,
   type NoteState,
   type ShellStyle,
 } from './desktop/config';
@@ -50,7 +46,7 @@ Quick Markdown notes that stay in local files.
 > Browser preview mode uses sample content. The desktop app reads and writes the configured notes folder.`;
 
 function App() {
-  const initialConfig = React.useMemo(() => (IS_TAURI ? defaultAppConfig() : browserPreviewConfig()), []);
+  const initialConfig = React.useMemo(() => (IS_DESKTOP ? defaultAppConfig() : browserPreviewConfig()), []);
   const [state, setState] = React.useState<NoteState>({
     notesDir: initialConfig.notesDir,
     notePath: initialConfig.notePath,
@@ -72,13 +68,13 @@ function App() {
   const [syncDeviceName, setSyncDeviceName] = React.useState(initialConfig.syncDeviceName);
   const [recordingHotkey, setRecordingHotkey] = React.useState(false);
   const [launchAtLogin, setLaunchAtLogin] = React.useState(false);
-  const [launchAtLoginReady, setLaunchAtLoginReady] = React.useState(!IS_TAURI);
+  const [launchAtLoginReady, setLaunchAtLoginReady] = React.useState(!IS_DESKTOP);
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState('');
   const [notes, setNotes] = React.useState<NoteEntry[]>([]);
   const [selectedIndex, setSelectedIndex] = React.useState(0);
   const [pinnedPaths, setPinnedPaths] = React.useState<string[]>(initialConfig.pinnedPaths);
-  const [appConfigReady, setAppConfigReady] = React.useState(!IS_TAURI);
+  const [appConfigReady, setAppConfigReady] = React.useState(!IS_DESKTOP);
 
   const acceptedHotkeyRef = React.useRef(initialConfig.hotkey);
   const pinnedPathsRef = React.useRef<string[]>(initialConfig.pinnedPaths);
@@ -118,11 +114,11 @@ function App() {
   // so switching notes paints first — the save never sits on the critical path.
   const flushPendingSave = React.useCallback(() => {
     const current = stateRef.current;
-    if (!IS_TAURI || current.content === current.savedContent) {
+    if (!IS_DESKTOP || current.content === current.savedContent) {
       return;
     }
     window.setTimeout(() => {
-      void invoke<NoteSaveResult>('write_note', {
+      void invoke('write_note', {
         notesDir: current.notesDir,
         notePath: current.notePath,
         content: current.content,
@@ -184,7 +180,7 @@ function App() {
     loadedDirRef.current = notesDir;
     const gen = ++noteGenRef.current;
     setState(prev => ({ ...prev, notesDir, status: 'loading', message: 'Loading…' }));
-    if (!IS_TAURI) {
+    if (!IS_DESKTOP) {
       const content = window.localStorage.getItem('nanotes:browserPreviewContent') ?? SAMPLE_NOTE;
       setState(prev => ({
         ...prev,
@@ -195,7 +191,7 @@ function App() {
       }));
       return;
     }
-    void invoke<string>('read_note', {
+    void invoke('read_note', {
       notesDir,
       notePath: state.notePath,
     })
@@ -233,14 +229,14 @@ function App() {
     setSettingsOpen(false);
     setState(prev => ({ ...prev, notePath, status: 'loading', message: 'Loading…' }));
 
-    if (!IS_TAURI) {
+    if (!IS_DESKTOP) {
       // No filesystem to read from in browser preview; just settle the status.
       setState(prev => ({ ...prev, status: 'saved', message: 'Browser preview' }));
       focusEditor();
       return;
     }
 
-    void invoke<string>('read_note', {
+    void invoke('read_note', {
       notesDir: stateRef.current.notesDir,
       notePath,
     })
@@ -282,7 +278,7 @@ function App() {
     // write_note) only once the user types and the autosave fires.
     setState(prev => ({ ...prev, notePath: '', content: '', savedContent: '', status: 'saved', message: 'New note' }));
 
-    if (!IS_TAURI) {
+    if (!IS_DESKTOP) {
       window.localStorage.setItem('nanotes:browserPreviewContent', '');
     }
   }, [clearLiveSession, flushPendingSave]);
@@ -292,9 +288,9 @@ function App() {
     setSettingsOpen(false);
     setSearchQuery('');
 
-    // The Tauri note list is fetched by the searchOpen/searchQuery effect below;
+    // The desktop note list is fetched by the searchOpen/searchQuery effect below;
     // here we only seed the browser-preview list, which that effect skips.
-    if (!IS_TAURI) {
+    if (!IS_DESKTOP) {
       setNotes([{ path: DEFAULT_NOTE, title: 'NaNotes', modifiedMs: 0 }]);
     }
   }, []);
@@ -310,13 +306,13 @@ function App() {
       return prev.filter(path => path !== notePath);
     });
 
-    if (!IS_TAURI) {
+    if (!IS_DESKTOP) {
       setNotes(prev => prev.filter(note => note.path !== notePath));
       return;
     }
 
     void invoke('delete_note', { notesDir: state.notesDir, notePath })
-      .then(() => invoke<NoteEntry[]>('list_notes', { notesDir: state.notesDir, query: searchQuery }))
+      .then(() => invoke('list_notes', { notesDir: state.notesDir, query: searchQuery }))
       .then(setNotes)
       .catch((error: unknown) => {
         setState(prev => ({ ...prev, status: 'error', message: String(error) }));
@@ -324,14 +320,14 @@ function App() {
   }, [searchQuery, state.notesDir]);
 
   const toggleLaunchAtLogin = React.useCallback(() => {
-    if (!IS_TAURI || !launchAtLoginReady) {
+    if (!IS_DESKTOP || !launchAtLoginReady) {
       return;
     }
 
     const next = !launchAtLogin;
     setLaunchAtLogin(next);
     setState(prev => ({ ...prev, status: 'saving', message: next ? 'Enabling login launch…' : 'Disabling login launch…' }));
-    void (next ? enableAutostart() : disableAutostart())
+    void invoke('autostart_set', { enabled: next })
       .then(() => {
         setState(prev => ({ ...prev, status: 'saved', message: next ? 'Launch at login enabled' : 'Launch at login disabled' }));
       })
@@ -345,7 +341,7 @@ function App() {
   // persistence is handled by the app-config effect below.
   const hotkeyAppliedRef = React.useRef(false);
   React.useEffect(() => {
-    if (!IS_TAURI) {
+    if (!IS_DESKTOP) {
       acceptedHotkeyRef.current = hotkey;
       setAcceptedHotkey(hotkey);
       return;
@@ -380,7 +376,7 @@ function App() {
     if (!recordingHotkey) {
       return;
     }
-    if (IS_TAURI) {
+    if (IS_DESKTOP) {
       void invoke('clear_hotkey').catch(() => undefined);
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -411,19 +407,19 @@ function App() {
       window.removeEventListener('keydown', onKeyDown, true);
       // Re-arm the shortcut. If a new combo was captured, the hotkey effect
       // re-registers it right after this cleanup, making this a harmless no-op.
-      if (IS_TAURI) {
+      if (IS_DESKTOP) {
         void invoke('set_hotkey', { accelerator: hotkeyRef.current }).catch(() => undefined);
       }
     };
   }, [recordingHotkey]);
 
   React.useEffect(() => {
-    if (!IS_TAURI) {
+    if (!IS_DESKTOP) {
       return;
     }
 
     let cancelled = false;
-    void invoke<AppConfig>('read_app_config')
+    void invoke('read_app_config')
       .then(config => {
         if (cancelled) {
           return;
@@ -474,7 +470,7 @@ function App() {
       syncToken,
       syncDeviceName,
     });
-    if (!IS_TAURI) {
+    if (!IS_DESKTOP) {
       writeBrowserPreviewConfig(config);
       return;
     }
@@ -493,11 +489,11 @@ function App() {
   }, [appConfigReady]);
 
   React.useEffect(() => {
-    if (!IS_TAURI) {
+    if (!IS_DESKTOP) {
       return;
     }
 
-    void isAutostartEnabled()
+    void invoke('autostart_is_enabled')
       .then(enabled => {
         setLaunchAtLogin(enabled);
         setLaunchAtLoginReady(true);
@@ -508,11 +504,11 @@ function App() {
   }, []);
 
   React.useEffect(() => {
-    if (!searchOpen || !IS_TAURI) {
+    if (!searchOpen || !IS_DESKTOP) {
       return;
     }
 
-    void invoke<NoteEntry[]>('list_notes', { notesDir: state.notesDir, query: searchQuery })
+    void invoke('list_notes', { notesDir: state.notesDir, query: searchQuery })
       .then(setNotes)
       .catch((error: unknown) => {
         setState(prev => ({ ...prev, status: 'error', message: String(error) }));
@@ -582,7 +578,7 @@ function App() {
 
   return (
     <main className="shell" style={shellStyle}>
-      <header className="topbar" data-tauri-drag-region>
+      <header className="topbar" data-drag-region>
         <SearchIsland
           searchOpen={searchOpen}
           searchQuery={searchQuery}

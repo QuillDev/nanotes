@@ -4,7 +4,9 @@ NaNotes separates platform shell behavior from local note-file semantics.
 
 ## Platform shell
 
-The desktop shell (`desktop/`, Electron) owns window creation, hotkey registration, and native file access. It exposes the same command bridge the earlier Tauri app had (`window.__TAURI_INTERNALS__`), so the React app calls `@tauri-apps/api` the same way on desktop and on Android, which still runs the Tauri app in `src-tauri/`. The React app should not assume macOS-only APIs directly; platform-specific behavior belongs in the shell.
+The desktop shell (`desktop/`, Electron) owns window creation, hotkey registration, and native file access. The React app reaches it through `window.nanotesDesktop` (`src/desktop/bridge.ts`); every command, its arguments and its result are defined once in `shared/ipc.ts`, which both the page and the main process's command table (`desktop/src/commands.js`) are type-checked against. The React app should not assume macOS-only APIs directly; platform-specific behavior belongs in the shell.
+
+Android (`android/`) is a Kotlin WebView around the sync server's web app (`src/web-app.tsx`), not the desktop app. It adds only what a browser tab can't: self-updates from GitHub releases through `window.NanotesAndroidUpdater`.
 
 NaNotes runs like a lightweight background utility rather than a document app: it starts hidden, stays out of the Dock/taskbar, and registers a global shortcut so the note overlay opens on demand. Login startup uses the system's login items on macOS and Windows and an XDG autostart entry on Linux.
 
