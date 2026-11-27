@@ -74,7 +74,7 @@ export class Passkeys {
     return id;
   }
 
-  registerOptions(setupToken: string, now: number): object | null {
+  registerOptions(setupToken: string, now: number) {
     if (!this.setupLinkValid(setupToken, now)) return null;
     const { id, challenge } = this.issue("register", now, setupToken);
     const existing = this.database.query<{ id: Uint8Array }, []>("SELECT id FROM passkeys").all();
@@ -85,12 +85,12 @@ export class Passkeys {
         rp: { id: this.rpId, name: "nanotes" },
         user: { id: this.userId(), name: "nanotes", displayName: "nanotes" },
         pubKeyCredParams: [
-          { type: "public-key", alg: ES256 },
-          { type: "public-key", alg: RS256 },
+          { type: "public-key" as const, alg: ES256 },
+          { type: "public-key" as const, alg: RS256 },
         ],
-        authenticatorSelection: { residentKey: "required", userVerification: "required" },
-        attestation: "none",
-        excludeCredentials: existing.map((row) => ({ type: "public-key", id: b64url(row.id) })),
+        authenticatorSelection: { residentKey: "required" as const, userVerification: "required" as const },
+        attestation: "none" as const,
+        excludeCredentials: existing.map((row) => ({ type: "public-key" as const, id: b64url(row.id) })),
         timeout: CHALLENGE_TTL_MS,
       },
     };
@@ -114,11 +114,11 @@ export class Passkeys {
     })();
   }
 
-  loginOptions(now: number): object {
+  loginOptions(now: number) {
     const { id, challenge } = this.issue("login", now, null);
     return {
       challengeId: id,
-      publicKey: { challenge: b64url(challenge), rpId: this.rpId, userVerification: "required", allowCredentials: [], timeout: CHALLENGE_TTL_MS },
+      publicKey: { challenge: b64url(challenge), rpId: this.rpId, userVerification: "required" as const, allowCredentials: [] as { id: string; type: "public-key" }[], timeout: CHALLENGE_TTL_MS },
     };
   }
 
