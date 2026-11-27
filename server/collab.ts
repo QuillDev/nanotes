@@ -37,12 +37,16 @@ interface Room {
   maxFlushTimer: ReturnType<typeof setTimeout> | null;
 }
 
-function sendJson(ws: ServerWebSocket<WsClientData>, payload: unknown): void {
+function sendRaw(ws: ServerWebSocket<WsClientData>, encoded: string): void {
   try {
-    ws.send(JSON.stringify(payload));
+    ws.send(encoded);
   } catch {
     // Ignore sends to closing sockets; close handler will clean up.
   }
+}
+
+function sendJson(ws: ServerWebSocket<WsClientData>, payload: unknown): void {
+  sendRaw(ws, JSON.stringify(payload));
 }
 
 function noteEventPayload(note: SyncedNote) {
@@ -64,6 +68,7 @@ function noteEventPayload(note: SyncedNote) {
 export class CollabHub {
   private readonly clients = new Set<ServerWebSocket<WsClientData>>();
   private readonly rooms = new Map<string, Room>();
+  private readonly dirtyRooms = new Set<Room>();
   private readonly flushDebounceMs: number;
 
   constructor(
@@ -87,10 +92,26 @@ export class CollabHub {
   }
 
   notifyDeviceRenamed(deviceId: string, deviceName: string): void {
+    const encoded = JSON.stringify({ type: "device-renamed", deviceName });
     for (const ws of this.clients) {
       if (ws.data.authed && ws.data.deviceId === deviceId) {
         ws.data.deviceName = deviceName;
-        sendJson(ws, { type: "device-renamed", deviceName });
+        sendRaw(ws, encoded);
+      }
+    }
+  }
+
+  disconnectDevice(deviceId: string): void {
+    const notice = JSON.stringify({ type: "error", message: "device revoked" });
+    for (const ws of [...this.clients]) {
+      if (ws.data.deviceId === deviceId) {
+        ws.data.authed = false;
+        sendRaw(ws, notice);
+        try {
+          ws.close(4401, "device revoked");
+        } catch {
+          // Ignore already closed sockets.
+        }
       }
     }
   }
@@ -268,9 +289,10 @@ export class CollabHub {
           for (const id of removed) ids.delete(id);
         }
         const update = bytesToBase64(encodeAwarenessUpdate(awareness, changed));
+        const frame = JSON.stringify({ type: "awareness", noteId, update });
         for (const client of room.clients) {
           if (client !== sender) {
-            sendJson(client, { type: "awareness", noteId, update });
+            sendRaw(client, frame);
           }
         }
       },
@@ -363,13 +385,15 @@ export class CollabHub {
       return;
     }
 
+    const frame = JSON.stringify({ type: "yjs-update", noteId, update: encoded });
     for (const peer of room.clients) {
       if (peer !== ws) {
-        sendJson(peer, { type: "yjs-update", noteId, update: encoded });
+        sendRaw(peer, frame);
       }
     }
 
     room.dirty = true;
+    this.dirtyRooms.add(room);
     this.scheduleFlush(room);
   }
 
@@ -401,12 +425,15 @@ export class CollabHub {
   }
 
   flushNote(noteId?: string): void {
+    if (this.dirtyRooms.size === 0) return;
     if (noteId) {
       const room = this.rooms.get(noteId);
-      if (room) this.flushRoom(room);
-      return;
+      if (room) {
+        this.flushRoom(room);
+        return;
+      }
     }
-    for (const room of this.rooms.values()) {
+    for (const room of [...this.dirtyRooms]) {
       this.flushRoom(room);
     }
   }
@@ -422,6 +449,7 @@ export class CollabHub {
     }
     if (!room.dirty) return;
     room.dirty = false;
+    this.dirtyRooms.delete(room);
 
     const content = room.doc.getText("content").toString();
     const state = Y.encodeStateAsUpdate(room.doc);
@@ -440,6 +468,7 @@ export class CollabHub {
       clearTimeout(room.maxFlushTimer);
       room.maxFlushTimer = null;
     }
+    this.dirtyRooms.delete(room);
     room.awareness.destroy();
     room.doc.destroy();
     this.rooms.delete(room.noteId);
@@ -478,6 +507,7 @@ export class CollabHub {
       }
       this.notes.saveYjsState(note.id, Y.encodeStateAsUpdate(activeRoom.doc));
       activeRoom.dirty = false;
+      this.dirtyRooms.delete(activeRoom);
       if (activeRoom.flushTimer) {
         clearTimeout(activeRoom.flushTimer);
         activeRoom.flushTimer = null;
@@ -487,15 +517,15 @@ export class CollabHub {
         activeRoom.maxFlushTimer = null;
       }
       if (emittedUpdate) {
-        const encoded = bytesToBase64(emittedUpdate);
+        const frame = JSON.stringify({
+          type: "yjs-update",
+          noteId: note.id,
+          update: bytesToBase64(emittedUpdate),
+          rev: note.rev,
+          path: note.path,
+        });
         for (const client of activeRoom.clients) {
-          sendJson(client, {
-            type: "yjs-update",
-            noteId: note.id,
-            update: encoded,
-            rev: note.rev,
-            path: note.path,
-          });
+          sendRaw(client, frame);
         }
       }
     } else {
@@ -516,10 +546,10 @@ export class CollabHub {
   }
 
   broadcastNoteChanged(note: SyncedNote): void {
-    const payload = noteEventPayload(note);
+    const encoded = JSON.stringify(noteEventPayload(note));
     for (const client of this.clients) {
       if (client.data.authed) {
-        sendJson(client, payload);
+        sendRaw(client, encoded);
       }
     }
   }

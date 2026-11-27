@@ -809,4 +809,121 @@ describe("nanotes sync server", () => {
       app.close();
     }
   });
+
+  test("revoking a device disconnects its active websocket while keeping other devices connected", async () => {
+    const now = 1_700_000_000_000;
+    const app = createApp({
+      databasePath: ":memory:",
+      passwordHash: null,
+      mcpToken: null,
+      secureCookies: false,
+      origin: null,
+      clock: () => now,
+    });
+    const cookie = app.auth.startSession(now).split(";")[0]!;
+    const laptop = app.auth.createDeviceToken("Laptop", now);
+    const phone = app.auth.createDeviceToken("Phone", now);
+
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: app.fetch,
+      websocket: app.websocket,
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+
+    try {
+      const openAuthed = async (token: string) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/ws`);
+        const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+          ws.onclose = (event) => resolve({ code: event.code, reason: event.reason });
+        });
+        await new Promise<void>((resolve, reject) => {
+          ws.onopen = () => ws.send(JSON.stringify({ type: "auth", token }));
+          ws.onmessage = (event) => {
+            const msg = JSON.parse(String(event.data)) as { type?: string };
+            if (msg.type === "authed") resolve();
+          };
+          ws.onerror = () => reject(new Error("ws error"));
+        });
+        return { ws, closed };
+      };
+
+      const laptopClient = await openAuthed(laptop.token);
+      const phoneClient = await openAuthed(phone.token);
+
+      const revokeRes = await fetch(`${base}/api/devices/${encodeURIComponent(laptop.device.id)}`, {
+        method: "DELETE",
+        headers: { cookie, origin: base },
+      });
+      expect(revokeRes.status).toBe(200);
+
+      const closeEvent = await Promise.race([
+        laptopClient.closed,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("expected revoked ws to close")), 1500)),
+      ]);
+      expect(closeEvent.code).toBe(4401);
+
+      // The other device remains connected and responsive to heartbeat pings.
+      const pong = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("expected phone ws pong")), 1500);
+        phoneClient.ws.onmessage = (event) => {
+          const msg = JSON.parse(String(event.data)) as { type?: string };
+          if (msg.type === "pong") {
+            clearTimeout(timer);
+            resolve();
+          }
+        };
+      });
+      phoneClient.ws.send(JSON.stringify({ type: "ping" }));
+      await pong;
+
+      phoneClient.ws.close();
+    } finally {
+      server.stop(true);
+      app.close();
+    }
+  });
+
+  test("listing and searching notes respects pin/recency order, utf-8 byte sizes, ASCII/Unicode queries, and limits", async () => {
+    let now = 1_700_000_000_000;
+    const app = createApp({
+      databasePath: ":memory:",
+      passwordHash: null,
+      mcpToken: null,
+      secureCookies: false,
+      origin: null,
+      clock: () => now,
+    });
+
+    try {
+      const older = app.notes.create({ content: "# Alpha Plan\n\nRoadmap item" }, now);
+      now += 1000;
+      const pinned = app.notes.create({ content: "# Pinned Note\n\nCafé notes" }, now);
+      app.notes.update(pinned.id, { pinned: true }, now);
+      now += 1000;
+      const unicode = app.notes.create({ content: "# 日本語メモ\n\nプロジェクトα" }, now);
+      now += 1000;
+      const deleted = app.notes.create({ content: "# Alpha Deleted\n\nGone" }, now);
+      app.notes.remove(deleted.id, now + 1);
+
+      const all = app.notes.listWithRev(undefined, 2);
+      expect(all.rev).toBe(app.notes.currentRev());
+      expect(all.notes.map((n) => n.id)).toEqual([pinned.id, unicode.id]);
+      expect(all.notes[0]?.size).toBe(Buffer.byteLength("# Pinned Note\n\nCafé notes", "utf8"));
+      expect(all.notes[1]?.size).toBe(Buffer.byteLength("# 日本語メモ\n\nプロジェクトα", "utf8"));
+
+      // ASCII case-insensitive search matches title, path, or body and excludes deleted rows.
+      const asciiMatches = app.notes.list("ALPHA", 10);
+      expect(asciiMatches.map((n) => n.id)).toEqual([older.id]);
+
+      // Non-ASCII case-insensitive search matches accented and CJK content.
+      const accentMatches = app.notes.list("café", 10);
+      expect(accentMatches.map((n) => n.id)).toEqual([pinned.id]);
+      const cjkMatches = app.notes.list("プロジェクト", 10);
+      expect(cjkMatches.map((n) => n.id)).toEqual([unicode.id]);
+    } finally {
+      app.close();
+    }
+  });
 });

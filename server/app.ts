@@ -283,13 +283,15 @@ export function createApp(options: AppOptions): {
     }
 
     if (deviceMatch && req.method === "DELETE") {
-      const revoked = auth.revokeDevice(decodeURIComponent(deviceMatch[1] as string));
+      const id = decodeURIComponent(deviceMatch[1] as string);
+      const revoked = auth.revokeDevice(id);
+      if (revoked) collab.disconnectDevice(id);
       return revoked ? json({ ok: true }) : error(404, "device not found");
     }
 
     if (path === "/api/notes" && req.method === "GET") {
       const query = url.searchParams.get("q") ?? undefined;
-      return json({ rev: notes.currentRev(), notes: notes.list(query) });
+      return json(notes.listWithRev(query));
     }
 
     if (path === "/api/notes" && req.method === "POST") {
